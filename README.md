@@ -45,7 +45,9 @@ pip install -e .
 ```
 
 ## Run a node
+(I actually have no idea if other people can even run a node outside of my local network. In future updates I plan ato buy a domain and use that for the nodes instead of cloudflare for easier peer discovery)  
 
+Download the node software here: [Releases](https://github.com/ProJackson355/Helixchain/releases)
 ```bash
 helix-node
 ```
@@ -71,6 +73,7 @@ Temporary TryCloudflare URLs change when the tunnel restarts.
 
 ## Helix Miner
 
+Download the miner here: [Releases](https://github.com/ProJackson355/Helixchain/releases)  
 Start a node, then launch the Python desktop mining app:
 
 ```bash

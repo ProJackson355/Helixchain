@@ -1,22 +1,22 @@
 [
   {
-    "url": "http://192.168.1.236:8000",
-    "last_seen": 1784905439.145796,
-    "latency_ms": 46.01,
+    "url": "http://100.106.61.104:8000",
+    "last_seen": 1784906927.183907,
+    "latency_ms": 39.94,
     "failures": 0,
     "score": 100,
-    "height": 721,
+    "height": 736,
     "version": "1.0.0",
     "protocol": 10,
     "network": "mainnet"
   },
   {
-    "url": "http://100.106.61.104:8000",
-    "last_seen": 1784905439.0693989,
-    "latency_ms": 46.52,
+    "url": "http://192.168.1.236:8000",
+    "last_seen": 1784906927.123572,
+    "latency_ms": 69.94,
     "failures": 0,
     "score": 100,
-    "height": 721,
+    "height": 736,
     "version": "1.0.0",
     "protocol": 10,
     "network": "mainnet"
