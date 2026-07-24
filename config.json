@@ -1,0 +1,122 @@
+{
+  "node": {
+    "port": 8000,
+    "sync_interval": 30,
+    "max_peers": 250,
+    "request_timeout": 3,
+    "version": "1.0.0",
+    "protocol": 10,
+    "network": "mainnet"
+  },
+  "network": {
+    "bootstrap_nodes": [],
+    "discovery_ports": [
+      8000,
+      8001,
+      8002,
+      8003,
+      8004,
+      8005
+    ],
+    "peer_failure_limit": 5,
+    "health_check_interval": 30,
+    "bootstrap_refresh_interval": 300,
+    "public_url": ""
+  },
+  "blockchain": {
+    "difficulty": 3,
+    "difficulty_reset_value": 3,
+    "difficulty_reset_height": 161,
+    "reward": 10,
+    "mining_reward": 2,
+    "mining_reward_activation_height": 90,
+    "fractional_mining_reward": "10",
+    "fractional_reward_activation_height": 300,
+    "native_dad_address": "9d7c721b209cee99a8158c524fa433ead9236781",
+    "native_dad_activation_height": 300,
+    "max_supply": 20000000,
+    "min_difficulty": 3,
+    "max_difficulty": 6,
+    "difficulty_adjustment_interval": 10,
+    "target_block_time_seconds": 60,
+    "adaptive_target_block_time_seconds": 600,
+    "adaptive_difficulty_activation_height": 60,
+    "new_target_block_time_seconds": 160,
+    "new_target_block_time_activation_height": 161,
+    "difficulty_activation_height": 10,
+    "token_metadata_activation_height": 41,
+    "token_exchange_activation_height": 41,
+    "token_swap_activation_height": 200,
+    "max_orphans": 100,
+    "orphan_ttl_seconds": 1800,
+    "checkpoints": {}
+  },
+  "mempool": {
+    "transaction_ttl_seconds": 3600,
+    "rebroadcast_interval": 60,
+    "inventory_batch_size": 500,
+    "max_pending_transactions": 5000
+  },
+  "wallet": {
+    "record_version": 2,
+    "default_kdf": "scrypt",
+    "history_include_pending": true
+  },
+  "security": {
+    "max_request_body_bytes": 1048576,
+    "ban_after_violations": 8,
+    "violation_window_seconds": 300,
+    "ban_duration_seconds": 900,
+    "trust_loopback_proxy_headers": true,
+    "require_admin_api_key": true,
+    "admin_api_key": "",
+    "admin_paths": [
+      "/mine",
+      "/sync",
+      "/nodes/sync_now",
+      "/nodes/discover",
+      "/nodes/audit"
+    ],
+    "cors_allowed_origins": [
+      "http://localhost",
+      "http://127.0.0.1"
+    ],
+    "rate_limits": {
+      "default": {
+        "requests": 180,
+        "window_seconds": 60
+      },
+      "transactions": {
+        "requests": 30,
+        "window_seconds": 60
+      },
+      "p2p": {
+        "requests": 240,
+        "window_seconds": 60
+      },
+      "mining": {
+        "requests": 6,
+        "window_seconds": 60
+      },
+      "external_mining": {
+        "requests": 240,
+        "window_seconds": 60
+      },
+      "admin": {
+        "requests": 20,
+        "window_seconds": 60
+      }
+    },
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
+  "performance": {
+    "default_page_size": 50,
+    "max_page_size": 500,
+    "compact_database_json": true,
+    "database_backup_count": 3
+  }
+}

@@ -1,0 +1,5 @@
+cryptography>=42
+fastapi>=0.115
+uvicorn>=0.30
+requests>=2.32
+mnemonic>=0.21

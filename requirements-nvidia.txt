@@ -1,0 +1,3 @@
+# Optional NVIDIA CUDA 13 backend for Helix Miner.
+# For a CUDA 12 driver, install cupy-cuda12x[ctk] instead. Do not install both.
+cupy-cuda13x[ctk]>=14,<15

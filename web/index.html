@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Helix Wallet</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0d0f14;
+      --surface:  #151920;
+      --surface2: #1c2130;
+      --border:   #252d3d;
+      --accent:   #7c5cfc;
+      --accent2:  #5b8af7;
+      --green:    #3dd68c;
+      --red:      #f06474;
+      --orange:   #ffb86c;
+      --text:     #e2e8f0;
+      --muted:    #8899aa;
+      --radius:   12px;
+    }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px; line-height: 1.6; min-height: 100vh;
+    }
+    #app { display: flex; flex-direction: column; min-height: 100vh; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 32px; background: var(--surface);
+      border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; }
+    .logo-hex {
+      width: 32px; height: 32px; background: var(--accent); border-radius: 8px;
+      display: grid; place-items: center; font-size: 17px;
+    }
+    .token-native-logo { display:inline-grid; flex-shrink:0; color:#fff; }
+    nav { display: flex; gap: 6px; }
+    .mobile-nav-head, .mobile-nav-lock, .menu-toggle, .mobile-nav-backdrop { display:none; }
+    .nav-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      padding: 7px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
+      transition: all .15s;
+    }
+    .nav-btn:hover, .nav-btn.active {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    #user-bar { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+    #hdr-wallet-name { color: var(--text); font-weight: 600; }
+    #hdr-wallet-addr {
+      color: var(--muted); font-family: monospace; font-size: 12px;
+      max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    main { flex: 1; padding: 32px; max-width: 860px; margin: 0 auto; width: 100%; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px; margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .1em; color: var(--muted); margin-bottom: 20px;
+    }
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input:not([type=checkbox]):not([type=radio]), select, textarea {
+      width:100%; min-height:43px; color-scheme:dark;
+      background-color:var(--surface2); border:1px solid var(--border);
+      border-radius:9px; color:var(--text); padding:10px 14px; font-size:14px;
+      outline:none; font-family:inherit;
+      transition:border-color .15s, box-shadow .15s, background-color .15s;
+    }
+    select {
+      appearance:none; cursor:pointer; padding-right:42px;
+      background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+      background-position:calc(100% - 19px) 18px,calc(100% - 13px) 18px;
+      background-size:6px 6px,6px 6px; background-repeat:no-repeat;
+    }
+    input:hover, select:hover, textarea:hover { border-color:#46506b; }
+    input:focus, select:focus, textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px #6c63ff24; background-color:#202638; }
+    input::placeholder, textarea::placeholder { color:#697086; opacity:1; }
+    input:disabled, select:disabled, textarea:disabled { opacity:.55; cursor:not-allowed; }
+    select option { background:var(--surface2); color:var(--text); }
+    textarea { resize: vertical; min-height: 72px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      padding: 10px 22px; border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer; border: none; transition: opacity .15s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { opacity: .85; }
+    .btn-success { background: var(--green); color: #0a1f11; }
+    .btn-success:hover:not(:disabled) { opacity: .85; }
+    .btn-danger { background:#3a1118; border:1px solid var(--red); color:var(--red); }
+    .btn-danger:hover:not(:disabled) { background:var(--red); color:#fff; }
+    .btn-ghost { background: none; border: 1px solid var(--border); color: var(--muted); }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .btn-sm { padding: 6px 14px; font-size: 13px; }
+    .btn-full { width: 100%; }
+    .btn-link {
+      background: none; border: none; color: var(--accent); cursor: pointer;
+      font-size: 13px; padding: 0; text-decoration: underline;
+    }
+    .btn-link:hover { opacity: .75; }
+    .auth-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+    .auth-tab {
+      background: none; border: none; color: var(--muted); padding: 10px 20px;
+      cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent;
+      margin-bottom: -1px; transition: all .15s;
+    }
+    .auth-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+    .auth-pane { display: none; }
+    .auth-pane.active { display: block; }
+    .balance-big {
+      font-size: 46px; font-weight: 800;
+      background: linear-gradient(130deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      line-height: 1.1;
+    }
+    .balance-unit { font-size: 20px; color: var(--muted); margin-left: 8px; }
+    .addr-row {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px;
+      font-family: monospace; font-size: 13px; word-break: break-all;
+    }
+    .copy-btn {
+      flex-shrink: 0; background: none; border: 1px solid var(--border);
+      color: var(--muted); padding: 4px 10px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; transition: all .12s;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .seed-box {
+      background: #1a0a00; border: 1px solid #7a4400;
+      border-radius: 10px; padding: 20px; margin: 16px 0;
+    }
+    .seed-warn {
+      display: flex; gap: 10px; align-items: flex-start;
+      background: #2e1800; border: 1px solid #7a4400; border-radius: 8px;
+      padding: 12px 16px; color: var(--orange); font-size: 13px; margin-bottom: 16px;
+    }
+    .seed-warn-icon { font-size: 18px; flex-shrink: 0; }
+    .seed-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    @media(max-width:560px) { .seed-grid { grid-template-columns: repeat(3,1fr); } }
+    .seed-word {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 8px 10px; font-size: 13px;
+      display: flex; align-items: center; gap: 7px;
+    }
+    .seed-num { color: var(--muted); font-size: 11px; min-width: 16px; }
+    .seed-w   { font-weight: 600; font-family: monospace; }
+    .tx-list { display: flex; flex-direction: column; gap: 8px; }
+    .tx-row {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 13px 16px;
+    }
+    .tx-row-action {
+      width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer;
+      transition: border-color .15s, transform .1s, background .15s;
+    }
+    .tx-row-action:hover { border-color: var(--accent); background: #202638; }
+    .tx-row-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .tx-row-action:active { transform: scale(.995); }
+    .tx-icon { width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font-size: 16px; }
+    .tx-icon.in  { background:#0d2d1e; color:var(--green); }
+    .tx-icon.out { background:#2d0d14; color:var(--red);   }
+    .tx-icon.sys { background:#151030; color:var(--accent2);}
+    .tx-body { flex: 1; min-width: 0; }
+    .tx-label { font-size: 13px; font-weight: 600; }
+    .tx-sub { font-size: 12px; color: var(--muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tx-right { text-align: right; flex-shrink: 0; }
+    .tx-amount { font-size: 15px; font-weight: 700; }
+    .tx-amount.in  { color: var(--green); }
+    .tx-amount.out { color: var(--red);   }
+    .tx-amount.sys { color: var(--accent2);}
+    .tx-meta { font-size: 11px; color: var(--muted); font-family: monospace; margin-top: 2px; }
+    .alert { border-radius: 8px; padding: 11px 15px; font-size: 13px; margin-bottom: 14px; white-space: pre-line; }
+    .alert-err  { background:#2d0d14; border:1px solid var(--red);    color:var(--red);    }
+    .alert-ok   { background:#0d2d1e; border:1px solid var(--green);  color:var(--green);  }
+    .alert-info { background:#0e1530; border:1px solid var(--accent2); color:var(--accent2);}
+    .alert-warn { background:#2e1800; border:1px solid var(--orange); color:var(--orange); }
+    #toast {
+      position: fixed; bottom: 26px; right: 26px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 13px 20px; font-size: 14px;
+      box-shadow: 0 8px 32px #0009; max-width: 320px;
+      opacity: 0; transform: translateY(12px);
+      transition: all .22s; pointer-events: none; z-index: 999;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.ok  { border-color: var(--green); }
+    #toast.err { border-color: var(--red);   }
+    .spinner {
+      display: inline-block; width: 15px; height: 15px;
+      border: 2px solid #ffffff33; border-top-color: #fff;
+      border-radius: 50%; animation: spin .55s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { text-align: center; color: var(--muted); padding: 30px; font-size: 14px; }
+    .mt8  { margin-top: 8px; }
+    .mt16 { margin-top: 16px; }
+    .mt20 { margin-top: 20px; }
+    .divider { border:none; border-top:1px solid var(--border); margin:18px 0; }
+    .node-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 4px 12px; font-size: 12px; color: var(--muted);
+    }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--green); }
+    .dot.syncing { background: var(--orange); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .sync-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+    #node-banner {
+      display: none; align-items: center; gap: 10px;
+      padding: 10px 32px; font-size: 13px;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+    }
+    #node-banner .btn-link { font-size: 13px; }
+    .peer-row {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 14px; margin-bottom: 6px;
+      font-size: 13px; font-family: monospace;
+    }
+    .peer-status { display:flex; align-items:center; gap:6px; }
+    .audit-grid {
+      display: grid; grid-template-columns: 48px 1fr 80px;
+      gap: 1px; background: var(--border);
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+      font-size: 12px; font-family: monospace;
+    }
+    .audit-grid > div { background: var(--surface2); padding: 7px 10px; }
+    .audit-hdr { background: var(--surface) !important; color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+    .audit-ok   { color: var(--green); font-weight: 700; }
+    .audit-fail { color: var(--red);   font-weight: 700; }
+    .audit-reason { grid-column: 1 / -1; background: #2d0d14 !important; color: var(--red); font-size: 11px; padding: 5px 10px; border-top: 1px solid var(--border); }
+    .audit-summary { display: flex; gap: 16px; align-items: center; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+    .audit-summary.ok  { background:#0d2d1e; border:1px solid var(--green); color:var(--green); }
+    .audit-summary.bad { background:#2d0d14; border:1px solid var(--red);   color:var(--red);   }
+    .audit-big { font-size: 22px; font-weight: 800; }
+    #hdr-sync-pill {
+      display: none; align-items: center; gap: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 4px 10px; font-size: 12px; color: var(--muted);
+    }
+    #hdr-sync-pill.visible { display: flex; }
+    .local-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #0e1a0e; border: 1px solid var(--green);
+      border-radius: 20px; padding: 3px 10px; font-size: 11px; color: var(--green);
+    }
+    .token-layout { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .token-tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; }
+    .token-tab {
+      border:1px solid var(--border); background:var(--surface2); color:var(--muted);
+      border-radius:8px; padding:9px 14px; cursor:pointer; font:inherit; font-weight:700;
+      white-space:nowrap;
+    }
+    .token-tab:hover, .token-tab.active { color:var(--text); border-color:var(--accent); background:#1d2340; }
+    .token-pane { display:none; }
+    .token-pane.active { display:block; }
+    .token-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+    #token-discovery-list.token-list { grid-template-columns:1fr; gap:8px; }
+    .token-card {
+      background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+      padding:14px; cursor:pointer; text-align:left; color:inherit; font:inherit;
+      display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:start;
+    }
+    .token-card:hover, .token-card.selected { border-color:var(--accent); }
+    .token-avatar { width:38px; height:38px; object-fit:cover; border-radius:50%; background:var(--surface); }
+    .token-symbol { color:var(--accent2); font-size:12px; font-weight:800; letter-spacing:.08em; }
+    .token-address { color:var(--muted); font:11px monospace; overflow-wrap:anywhere; margin-top:5px; }
+    .token-card .token-address { display:block; }
+    .token-balance { font-size:20px; font-weight:800; margin-top:8px; }
+    .token-selected-info { background:var(--surface2); border:1px solid var(--border); border-radius:9px; padding:12px; margin-bottom:14px; }
+    .metadata-preview { display:flex; gap:12px; align-items:flex-start; background:var(--surface2); border:1px solid var(--border); border-radius:9px; padding:12px; margin-bottom:14px; }
+    .metadata-preview img { width:72px; height:72px; object-fit:cover; border-radius:9px; background:var(--surface); }
+    .metadata-description { color:var(--muted); font-size:12px; margin-top:5px; white-space:pre-wrap; }
+    .price-chart-card { margin-top:16px; padding:14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; }
+    .price-chart-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-bottom:10px; }
+    .price-chart-summary { color:var(--muted); font-size:11px; text-align:right; }
+    .chart-viewport {
+      position:relative; width:100%; height:320px; min-height:220px; max-height:720px;
+      overflow:hidden; border:1px solid var(--border); border-radius:9px;
+      background:#0b0e16; touch-action:none; user-select:none; cursor:crosshair;
+    }
+    .chart-scroll { width:100%; overflow-x:auto; overscroll-behavior:contain; padding-bottom:3px; }
+    .chart-scroll .chart-viewport { min-width:100%; flex:none; }
+    .price-chart-svg { display:block; width:100%; height:100%; }
+    .price-chart-controls { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
+    .chart-size-control { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
+    .chart-size-control input[type=range] { width:120px; min-height:32px; padding:0; accent-color:var(--accent); }
+    .chart-resize-handle {
+      display:flex; align-items:center; justify-content:center; height:18px; margin-top:5px;
+      color:var(--muted); cursor:nwse-resize; touch-action:none; font-size:17px; letter-spacing:3px;
+    }
+    .chart-resize-handle::before { content:'•••'; transform:rotate(90deg); }
+    .chart-tooltip {
+      position:absolute; z-index:2; pointer-events:none; display:none; min-width:150px;
+      padding:7px 9px; border:1px solid var(--border); border-radius:7px;
+      background:#111621ed; box-shadow:0 8px 24px #0008; color:var(--text);
+      font:11px/1.45 monospace;
+    }
+    .chart-tooltip.visible { display:block; }
+    .chart-crosshair { stroke:#8899aa88; stroke-width:1; stroke-dasharray:4 4; pointer-events:none; }
+    .chart-hit-area { fill:transparent; cursor:grab; }
+    .chart-hit-area:active { cursor:grabbing; }
+    .chart-help { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:5px; }
+    .chart-grid { stroke:var(--border); stroke-width:1; }
+    .chart-axis-label { fill:var(--muted); font:11px monospace; }
+    .chart-line { fill:none; stroke:var(--accent2); stroke-width:3; stroke-linejoin:round; stroke-linecap:round; }
+    .chart-segment { fill:none; stroke:var(--accent2); stroke-width:3; stroke-linecap:round; }
+    .chart-segment.bullish { stroke:var(--green); }
+    .chart-segment.bearish { stroke:var(--red); }
+    .chart-candle .candle-wick { stroke:var(--accent2); stroke-width:1.4; }
+    .chart-candle .candle-body { fill:var(--accent2); stroke:var(--accent2); stroke-width:1; }
+    .chart-candle.bullish .candle-wick, .chart-candle.bullish .candle-body { stroke:var(--green); }
+    .chart-candle.bullish .candle-body { fill:var(--green); }
+    .chart-candle.bearish .candle-wick, .chart-candle.bearish .candle-body { stroke:var(--red); }
+    .chart-candle.bearish .candle-body { fill:var(--red); }
+    .chart-candle.carried { opacity:.38; }
+    .chart-point { fill:var(--surface2); stroke:var(--accent2); stroke-width:2; }
+    .price-chart-card.bullish .chart-line { stroke:var(--green); }
+    .price-chart-card.bullish .chart-point { stroke:var(--green); }
+    .price-chart-card.bearish .chart-line { stroke:var(--red); }
+    .price-chart-card.bearish .chart-point { stroke:var(--red); }
+    .chart-trend.bullish { color:var(--green); }
+    .chart-trend.bearish { color:var(--red); }
+    .chart-trend.neutral { color:var(--accent2); }
+    .native-supply { margin-top:16px; padding:14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; }
+    .native-supply-head { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin-bottom:8px; }
+    .native-supply-head strong { color:var(--text); }
+    .native-supply-track { height:10px; overflow:hidden; border-radius:20px; background:#090c14; border:1px solid var(--border); }
+    .native-supply-track span { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+    .pagination { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:7px; margin-top:18px; }
+    .page-btn {
+      min-width:36px; height:36px; padding:0 10px; border:1px solid var(--border);
+      border-radius:8px; background:var(--surface2); color:var(--muted); cursor:pointer; font:inherit;
+    }
+    .page-btn:hover:not(:disabled), .page-btn.active { border-color:var(--accent); color:var(--text); background:#1d2340; }
+    .page-btn.active { color:var(--accent2); font-weight:800; }
+    .page-btn:disabled { cursor:default; opacity:.55; }
+    .docs-hero { display:flex; align-items:center; justify-content:space-between; gap:24px; }
+    .docs-hero h2 { font-size:26px; margin-bottom:8px; }
+    .docs-hero p, .docs-section p { color:var(--muted); font-size:13px; line-height:1.65; }
+    .docs-downloads { display:flex; gap:10px; flex-wrap:wrap; flex-shrink:0; }
+    .docs-downloads .btn { text-decoration:none; text-align:center; }
+    .docs-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
+    .docs-section ol, .docs-section ul { padding-left:20px; color:var(--muted); font-size:13px; line-height:1.65; }
+    .docs-section li + li { margin-top:8px; }
+    .docs-section strong { color:var(--text); }
+    .docs-section code { color:var(--accent2); background:#0b0e16; border:1px solid var(--border); border-radius:5px; padding:1px 5px; overflow-wrap:anywhere; }
+    @media(max-width:700px) {
+      .token-layout { grid-template-columns:1fr; }
+      body.mobile-nav-open { overflow:hidden; }
+      header { padding:11px 14px; min-height:58px; flex-wrap:nowrap; gap:10px; z-index:40; }
+      .logo { font-size:18px; }
+      .logo-hex { width:30px; height:30px; }
+      .wallet-unlocked .menu-toggle {
+        display:inline-flex; width:42px; height:42px; padding:0; margin-left:auto;
+        flex-direction:column; align-items:center; justify-content:center; gap:5px;
+        background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+        color:var(--text); cursor:pointer;
+      }
+      .menu-toggle span { width:20px; height:2px; background:currentColor; border-radius:2px; transition:transform .2s,opacity .2s; }
+      .mobile-nav-open .menu-toggle span:nth-child(1) { transform:translateY(7px) rotate(45deg); }
+      .mobile-nav-open .menu-toggle span:nth-child(2) { opacity:0; }
+      .mobile-nav-open .menu-toggle span:nth-child(3) { transform:translateY(-7px) rotate(-45deg); }
+      #main-nav {
+        display:flex !important; position:fixed; inset:0 0 0 auto; width:min(84vw,330px);
+        padding:18px 16px max(22px,env(safe-area-inset-bottom)); flex-direction:column;
+        align-items:stretch; gap:8px; overflow-y:auto; background:var(--surface);
+        border-left:1px solid var(--border); box-shadow:-18px 0 50px #000a;
+        transform:translateX(105%); visibility:hidden; transition:transform .22s ease,visibility .22s;
+        z-index:50;
+      }
+      .mobile-nav-open #main-nav { transform:translateX(0); visibility:visible; }
+      .mobile-nav-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:2px 4px 14px; border-bottom:1px solid var(--border); margin-bottom:5px; }
+      .mobile-nav-head strong { font-size:17px; }
+      .mobile-nav-close { width:38px; height:38px; padding:0; font-size:24px; line-height:1; }
+      #main-nav .nav-btn { width:100%; min-height:45px; padding:10px 14px; text-align:left; font-size:15px; }
+      #main-nav .nav-btn.active { box-shadow:inset 3px 0 0 #fff; }
+      .mobile-nav-lock { display:inline-flex; margin-top:auto; min-height:45px; }
+      .mobile-nav-backdrop { position:fixed; inset:0; z-index:35; background:#05070b8c; opacity:0; visibility:hidden; transition:opacity .22s,visibility .22s; }
+      .mobile-nav-open .mobile-nav-backdrop { display:block; opacity:1; visibility:visible; }
+      #user-bar { margin-left:auto; min-width:0; }
+      #user-bar > .local-badge, #user-bar > div:not(#hdr-sync-pill), #btn-logout { display:none; }
+      #hdr-sync-pill.visible { max-width:130px; overflow:hidden; }
+      main { padding:18px 12px; }
+      .card { padding:18px; }
+      .token-list { grid-template-columns:1fr; }
+      .token-card { grid-template-columns:auto minmax(0,1fr); }
+      .token-card .token-balance { grid-column:2; margin-top:0; font-size:17px; }
+      .price-chart-card { padding:10px 8px; }
+      .price-chart-head { align-items:flex-start; flex-direction:column; }
+      .price-chart-summary { text-align:left; }
+      .chart-viewport { min-height:220px; height:300px; }
+      .price-chart-controls { align-items:flex-start; flex-direction:column; }
+      .chart-size-control { width:100%; }
+      .chart-size-control input[type=range] { flex:1; width:auto; }
+      .metadata-preview { flex-direction:column; }
+      .docs-hero { align-items:flex-start; flex-direction:column; }
+      .docs-downloads { width:100%; }
+      .docs-downloads .btn { flex:1; }
+      .docs-grid { grid-template-columns:1fr; }
+      #panel-nodes > .nodes-grid { grid-template-columns:minmax(0,1fr); gap:0; }
+      #panel-nodes .peer-add-row { flex-direction:column; }
+      #panel-nodes .peer-add-row .btn { width:100%; min-height:43px; }
+      #panel-nodes .peer-row { align-items:flex-start; flex-direction:column; gap:8px; overflow-wrap:anywhere; }
+      #panel-nodes .node-section-head { align-items:flex-start !important; flex-direction:column; gap:10px; }
+      #panel-nodes .node-section-head .btn { width:100%; }
+      #panel-nodes .audit-grid { grid-template-columns:38px minmax(0,1fr) 64px; font-size:11px; }
+      #panel-nodes .audit-grid > div { min-width:0; padding:7px 6px; overflow-wrap:anywhere; }
+      #panel-nodes .audit-summary { align-items:flex-start; }
+      #panel-nodes .card { overflow:hidden; }
+    }
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: #06080dbd; padding: 24px; align-items: center; justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      width: min(680px, 100%); max-height: calc(100vh - 48px); overflow-y: auto;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      box-shadow: 0 24px 80px #000c;
+    }
+    .modal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 22px; border-bottom: 1px solid var(--border);
+    }
+    .modal-head h2 { font-size: 18px; }
+    .modal-close {
+      width: 34px; height: 34px; padding: 0; border-radius: 8px; font-size: 20px;
+    }
+    .modal-body { padding: 22px; }
+    .detail-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+    .detail-label, .detail-value { background: var(--surface2); padding: 10px 12px; }
+    .detail-label { color: var(--muted); font-size: 12px; }
+    .detail-value { font-family: monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .status-badge { display: inline-block; border-radius: 20px; padding: 2px 9px; font-family: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .status-badge.confirmed { color: var(--green); border: 1px solid var(--green); background: #0d2d1e; }
+    .status-badge.pending { color: var(--orange); border: 1px solid var(--orange); background: #2e1800; }
+    @media(max-width:560px) {
+      .modal-backdrop { padding: 10px; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .detail-label { padding-bottom: 3px; }
+      .detail-value { padding-top: 3px; }
+    }
+  </style>
+</head>
+<body>
+<div id="node-banner" style="display:none">
+  <div class="dot" id="banner-dot" style="background:var(--orange);animation:pulse 1s ease-in-out infinite"></div>
+  <span id="banner-text">Searching for Helix node…</span>
+</div>
+
+<div id="app">
+<header>
+  <div class="logo">
+    <div class="logo-hex">⬡</div>
+    Helix
+  </div>
+  <nav id="main-nav" style="display:none">
+    <div class="mobile-nav-head">
+      <strong>Menu</strong>
+      <button type="button" class="btn btn-ghost mobile-nav-close" id="btn-close-mobile-nav" aria-label="Close navigation">&times;</button>
+    </div>
+    <button class="nav-btn active" data-panel="dashboard">Dashboard</button>
+    <button class="nav-btn" data-panel="send">Send</button>
+    <button class="nav-btn" data-panel="tokens">Tokens</button>
+    <button class="nav-btn" data-panel="history">History</button>
+    <button class="nav-btn" data-panel="activity">Activity</button>
+    <button class="nav-btn" data-panel="nodes">Nodes</button>
+    <button class="nav-btn" data-panel="docs">Docs</button>
+    <button type="button" class="btn btn-danger mobile-nav-lock" id="btn-mobile-logout">Lock wallet</button>
+  </nav>
+  <div id="user-bar" style="display:none">
+    <div id="hdr-sync-pill"><div class="dot syncing"></div><span id="hdr-sync-text">Syncing…</span></div>
+    <span class="local-badge">🔒 Local wallet</span>
+    <div>
+      <div id="hdr-wallet-name"></div>
+      <div id="hdr-wallet-addr"></div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="btn-logout">Lock</button>
+  </div>
+  <button type="button" class="menu-toggle" id="btn-mobile-nav" aria-label="Open navigation" aria-controls="main-nav" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+<button type="button" class="mobile-nav-backdrop" id="mobile-nav-backdrop" aria-label="Close navigation"></button>
+
+<main>
+
+<!-- AUTH -->
+<div id="panel-auth" class="panel active">
+  <div style="max-width:440px;margin:56px auto">
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-pane="login">Unlock</button>
+      <button class="auth-tab" data-pane="create">New Wallet</button>
+      <button class="auth-tab" data-pane="recover">Recover</button>
+    </div>
+
+    <!-- UNLOCK -->
+    <div id="pane-login" class="auth-pane active">
+      <div class="card">
+        <div class="card-title">Unlock Local Wallet</div>
+        <div class="alert alert-info" style="margin-bottom:16px">
+          Your wallet is stored encrypted on this device. The password decrypts it locally — it is never sent anywhere.
+        </div>
+        <div id="login-alert"></div>
+        <div class="field">
+          <label>Wallet Name</label>
+          <input id="login-name" type="text" placeholder="Type your wallet name" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <button class="btn btn-primary btn-full mt8" id="btn-login">Unlock</button>
+      </div>
+    </div>
+
+    <!-- CREATE -->
+    <div id="pane-create" class="auth-pane">
+      <div class="card">
+        <div class="card-title">New Wallet</div>
+        <div id="create-alert"></div>
+        <div id="create-step-form">
+          <div class="field">
+            <label>Wallet Name</label>
+            <input id="create-name" type="text" placeholder="my-wallet" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input id="create-pass" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label>Confirm Password</label>
+            <input id="create-pass2" type="password" placeholder="Repeat password" autocomplete="new-password" />
+          </div>
+          <button class="btn btn-primary btn-full mt8" id="btn-create">Create Wallet</button>
+        </div>
+        <div id="create-step-seed" style="display:none">
+          <div class="seed-warn">
+            <span class="seed-warn-icon">⚠️</span>
+            <div>
+              <strong>Write these 12 words down now.</strong> This is the only time they will be shown.
+              Your wallet is stored locally on this device — the seed phrase is the only way to recover it.
+            </div>
+          </div>
+          <div class="seed-grid" id="seed-reveal-grid"></div>
+          <div class="field mt16">
+            <label>Your address</label>
+            <div class="addr-row">
+              <span id="seed-reveal-addr" style="flex:1"></span>
+              <button class="copy-btn" data-copy-id="seed-reveal-addr">Copy</button>
+            </div>
+          </div>
+          <button class="btn btn-success btn-full mt16" id="btn-seed-saved">
+            ✓ I have written down my seed phrase — Continue
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECOVER -->
+    <div id="pane-recover" class="auth-pane">
+      <div class="card">
+        <div class="card-title">Recover Wallet from Seed Phrase</div>
+        <div id="recover-alert"></div>
+        <div class="alert alert-info" style="margin-bottom:16px">
+          Enter your 12-word seed phrase to restore your wallet locally with a new password.
+        </div>
+        <div class="field">
+          <label>Wallet Name</label>
+          <input id="recover-name" type="text" placeholder="my-wallet" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>Seed Phrase (12 words, space-separated)</label>
+          <textarea id="recover-seed" placeholder="word1 word2 … word12"></textarea>
+        </div>
+        <div class="field">
+          <label>New Password</label>
+          <input id="recover-pass" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label>Confirm New Password</label>
+          <input id="recover-pass2" type="password" placeholder="Repeat password" autocomplete="new-password" />
+        </div>
+        <button class="btn btn-primary btn-full mt8" id="btn-recover">Recover Wallet</button>
+      </div>
+    </div>
+  </div>
+</div><!-- /panel-auth -->
+
+<!-- DASHBOARD -->
+<div id="panel-dashboard" class="panel">
+  <div class="card">
+    <div class="sync-row">
+      <div class="card-title" style="margin-bottom:0">Balance</div>
+      <div class="node-pill"><div class="dot" id="sync-dot"></div><span id="sync-label">Synced</span></div>
+    </div>
+    <div style="margin:14px 0 4px">
+      <span class="balance-big" id="dash-balance">—</span>
+      <span class="balance-unit">HLX</span>
+    </div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:18px">
+      <span id="dash-pending-count">—</span> transactions pending on the network
+    </div>
+    <div class="field">
+      <label>Your Address</label>
+      <div class="addr-row">
+        <span id="dash-addr" style="flex:1"></span>
+        <button class="copy-btn" data-copy-id="dash-addr">Copy</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-ghost btn-sm" id="btn-dash-refresh">↻ Refresh</button>
+      <button class="btn btn-ghost btn-sm" id="btn-sync-now">⇄ Sync with peers</button>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">Your Tokens</div>
+      <button class="btn btn-ghost btn-sm" id="btn-dash-tokens">Open Tokens</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Every confirmed token with a balance in this wallet appears here, even when someone else created or manages it.</p>
+    <div id="dash-token-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Wallet Security</div>
+    <div id="delete-wallet-alert"></div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Delete this wallet's encrypted local record from this browser. Blockchain funds are not deleted and can only be accessed again with the seed phrase.</p>
+    <button class="btn btn-danger" id="btn-delete-wallet" type="button">Delete This Wallet</button>
+  </div>
+</div>
+
+<!-- SEND -->
+<div id="panel-send" class="panel">
+  <div class="card" style="max-width:520px">
+    <div class="card-title">Send Crypto</div>
+    <div id="send-alert"></div>
+    <div class="field">
+      <label>Asset</label>
+      <select id="send-asset"><option value="HLX">Helix (HLX)</option></select>
+    </div>
+    <div class="field">
+      <label>Recipient Address (40 hex characters)</label>
+      <input id="send-to" type="text" placeholder="a1b2c3…" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label id="send-amount-label">Amount (HLX)</label>
+      <input id="send-amount" inputmode="decimal" placeholder="0" />
+    </div>
+    <button class="btn btn-primary btn-full mt8" id="btn-send">Send HLX</button>
+  </div>
+  <div class="card" style="max-width:520px">
+    <div class="card-title">Receive</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Share your address to receive HLX or custom tokens from anyone on the network.</p>
+    <div class="addr-row">
+      <span id="recv-addr" style="flex:1"></span>
+      <button class="copy-btn" data-copy-id="recv-addr">Copy</button>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">Pending Transactions</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-pending">Refresh</button>
+    </div>
+    <div id="pending-alert"></div>
+    <div id="pending-list"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+
+<!-- TOKENS -->
+<div id="panel-tokens" class="panel">
+  <div class="token-tabs" role="tablist" aria-label="Token sections">
+    <button class="token-tab active" type="button" data-token-pane="wallet">My Tokens</button>
+    <button class="token-tab" type="button" data-token-pane="discover">Discover</button>
+    <button class="token-tab" type="button" data-token-pane="manage">Management</button>
+    <button class="token-tab" type="button" data-token-pane="create">Create Token</button>
+  </div>
+
+  <div id="token-pane-discover" class="token-pane">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Discover Tokens</div>
+        <button class="btn btn-ghost btn-sm" id="btn-refresh-discover-tokens">Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Browse every confirmed token created on Helix, including tokens made by other wallets. Select one for metadata and market details.</p>
+      <div class="field"><label>Search assets</label><input id="token-search" type="text" placeholder="Name, symbol, or MNT address" autocomplete="off" /></div>
+      <div id="token-discovery-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
+    </div>
+    <div class="card" id="token-market-detail">
+      <div class="empty">Select a token to view its details and exchange market.</div>
+    </div>
+  </div>
+
+  <div id="token-pane-wallet" class="token-pane active">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Tokens in This Wallet</div>
+        <button class="btn btn-ghost btn-sm" id="btn-refresh-tokens">Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Tokens appear here whenever this wallet has a confirmed balance. You do not need to be the creator or DAD authority.</p>
+      <div id="token-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="token-pane-create" class="token-pane">
+      <div class="card" style="max-width:620px">
+        <div class="card-title">Create a Token</div>
+        <div id="token-create-alert"></div>
+        <div class="field"><label>Metadata JSON URL</label><input id="token-uri" type="url" maxlength="1024" placeholder="https://gateway.example/ipfs/METADATA_CID" /></div>
+        <button class="btn btn-ghost btn-sm" id="btn-token-load-metadata" type="button">Load metadata</button>
+        <div id="token-metadata-preview" class="empty" style="margin:12px 0">Load a JSON document containing name, symbol, description, and image.</div>
+        <div class="field"><label>Decimals (0&ndash;9)</label><input id="token-decimals" type="number" min="0" max="9" value="0" /></div>
+        <div class="field"><label>DAD management authority</label><input id="token-dad-address" maxlength="40" placeholder="Defaults to your wallet address" /></div>
+        <button class="btn btn-primary btn-full mt8" id="btn-token-create">Create Token</button>
+        <p style="font-size:12px;color:var(--muted);margin-top:10px">Like a Solana mint, a new MNT starts with zero supply. Its DAD authority can mint afterward.</p>
+      </div>
+  </div>
+
+  <div id="token-pane-manage" class="token-pane">
+      <div class="card" style="max-width:720px">
+        <div class="card-title">Token Management</div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Transfer tokens held by this wallet, or mint and manage authority for tokens whose DAD is this wallet.</p>
+        <div id="token-action-alert"></div>
+        <div class="field"><label>Token</label><select id="token-select"><option value="">No manageable tokens</option></select></div>
+        <div id="token-selected-info" class="empty">Select a confirmed token.</div>
+        <div class="field"><label>Recipient address</label><input id="token-recipient" maxlength="40" placeholder="40-character address" /></div>
+        <div class="field"><label>Amount</label><input id="token-amount" inputmode="decimal" placeholder="0" /></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" style="flex:1" id="btn-token-transfer">Transfer</button>
+          <button class="btn btn-success" style="flex:1" id="btn-token-mint">Mint</button>
+        </div>
+        <div id="token-authority-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="field"><label>New DAD authority address</label><input id="token-new-dad" maxlength="40" placeholder="40-character address" /></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost" style="flex:1" id="btn-token-set-dad">Transfer DAD</button>
+            <button class="btn btn-ghost" style="flex:1;color:var(--red)" id="btn-token-revoke-dad">Revoke DAD</button>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:8px">Revoking DAD is permanent and makes the supply fixed.</p>
+        </div>
+        <div id="token-pool-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="card-title" style="margin-bottom:12px">Create Exchange Pool</div>
+          <div id="token-pool-alert"></div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Enter only the HLX liquidity. Helix automatically places this DAD wallet's entire confirmed coin balance into the pool, giving every pooled token an equal share of the opening HLX value. Initial liquidity is permanent and the pool charges 0.3% per trade.</p>
+          <div class="field"><label>HLX liquidity (whole HLX)</label><input id="token-pool-hlx-amount" type="number" min="1" step="1" placeholder="0" /></div>
+          <button class="btn btn-success btn-full" id="btn-token-create-pool">Create Exchange Pool</button>
+        </div>
+        <div id="token-pool-add-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="card-title" style="margin-bottom:12px">Add HLX Liquidity</div>
+          <div id="token-pool-add-alert"></div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Move additional HLX into this coin's pool. This is permanent, increases displayed liquidity, and raises the reserve price because no tokens are removed.</p>
+          <div class="field"><label>Additional HLX</label><input id="token-pool-add-hlx-amount" type="number" min="1" step="1" placeholder="0" /></div>
+          <button class="btn btn-success btn-full" id="btn-token-add-pool-liquidity">Add HLX Liquidity</button>
+        </div>
+      </div>
+  </div>
+</div>
+
+<!-- HISTORY -->
+<div id="panel-history" class="panel">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <div class="card-title" style="margin-bottom:0">Transaction History</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-history">↻ Refresh</button>
+    </div>
+    <div id="history-list"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ACTIVITY -->
+<div id="panel-activity" class="panel">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:0">Blockchain Activity</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-activity">Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">All confirmed transactions from every wallet, newest first. Select a transaction to view its block, signature, addresses, and token details.</p>
+    <div id="activity-list"><div class="empty">Loading&hellip;</div></div>
+    <nav id="activity-pagination" class="pagination" aria-label="Blockchain activity pages"></nav>
+  </div>
+</div>
+
+<!-- DOCS -->
+<div id="panel-docs" class="panel">
+  <div class="card docs-hero">
+    <div>
+      <div class="card-title">Helix Documentation</div>
+      <h2>Use the wallet, mine blocks, or join the network.</h2>
+      <p>Helix is an educational proof-of-work network. Start with the wallet guide, or download the software needed to run your own miner or full node.</p>
+    </div>
+    <div class="docs-downloads">
+      <a class="btn btn-primary" href="/downloads/helix-miner.zip" download>Download Helix Miner</a>
+      <a class="btn btn-success" href="/downloads/helix-node.zip" download>Download Helix Node</a>
+    </div>
+  </div>
+
+  <div class="docs-grid">
+    <section class="card docs-section">
+      <div class="card-title">Wallet basics</div>
+      <ol>
+        <li>Create a wallet, choose a unique local name and password, and save the 12-word recovery phrase offline.</li>
+        <li>Use <strong>Send</strong> to choose HLX or a held custom token, enter the recipient address and amount, then submit the signed transaction.</li>
+        <li>A submitted transaction stays pending until a miner confirms it. Its sender may cancel it from Send while it is still pending.</li>
+        <li><strong>History</strong> shows this wallet's transactions. <strong>Activity</strong> shows confirmed transactions from every wallet, newest first.</li>
+      </ol>
+      <div class="alert alert-warn">Never share a recovery phrase, private key, wallet password, or node admin API key.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Tokens and markets</div>
+      <ol>
+        <li>Open <strong>Tokens &gt; Create Token</strong> and provide an HTTPS metadata JSON URL with name, symbol, description, and image fields.</li>
+        <li>The MNT address identifies the token. The DAD address is the authority allowed to mint more supply, transfer authority, or revoke it permanently.</li>
+        <li>After creation is mined, mint supply from Management. Tokens become visible from confirmed blockchain state.</li>
+        <li>Discover shows HLX and every confirmed token. A DAD can create a market by locking HLX and its entire confirmed token balance; users can then buy, sell, or atomically swap between tokens with active pools.</li>
+        <li>OHLC candlestick charts use real timestamps and begin at the left edge of the selected view. Choose 1m, 1H, 1D, or 1M; drag to pan, use the wheel or +/− buttons to zoom, and adjust both width and height. Rising candles are green and falling candles are red.</li>
+      </ol>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Run a full node</div>
+      <ol>
+        <li>Install Python 3.11 or newer and extract <code>helix-node.zip</code>.</li>
+        <li>Open a terminal in the extracted folder and run <code>python -m venv .venv</code>.</li>
+        <li>Install dependencies with <code>.venv\Scripts\python.exe -m pip install -r requirements.txt</code> on Windows, or <code>.venv/bin/python -m pip install -r requirements.txt</code> on Linux/macOS.</li>
+        <li>Set a persistent, private <code>HELIX_ADMIN_API_KEY</code>, then start with <code>.venv\Scripts\python.exe run_node.py</code>. Do not generate a new key on every launch.</li>
+        <li>Open <code>http://127.0.0.1:8000/health</code>. Add synchronized Helix peers in the Nodes tab or in <code>config.json</code>.</li>
+      </ol>
+      <p>Other nodes may use different admin keys. The key protects local administrative endpoints and is not part of consensus or shared chain data.</p>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Expose and connect a node</div>
+      <ol>
+        <li>For temporary testing, run <code>cloudflared tunnel --url http://127.0.0.1:8000</code>. No port forwarding or personal domain is required.</li>
+        <li>Confirm <code>https://YOUR-URL.trycloudflare.com/health</code> returns healthy node JSON, then email the TryCloudflare URL to <a href="mailto:jackson.tripp100@gmail.com">jackson.tripp100@gmail.com</a> so it can be considered for the Helix node list.</li>
+        <li>Put the resulting HTTPS URL in the Pages <code>HELIX_NODE_URL</code> variable. Multiple nodes use a JSON array such as <code>[&quot;https://node1.example&quot;,&quot;https://node2.example&quot;]</code>.</li>
+        <li>Redeploy Pages after changing variables. TryCloudflare URLs expire when the tunnel stops, so replace them when necessary.</li>
+        <li>For a permanent public node, use a named tunnel, TLS, firewall rules, backups, rate limits, and trusted peers.</li>
+      </ol>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Mine with Helix Miner</div>
+      <ol>
+        <li>Extract <code>helix-miner.zip</code>, install Python 3.11+, then run <code>python -m pip install -r requirements.txt</code>.</li>
+        <li>Start it with <code>python helix_miner.py</code>.</li>
+        <li>Enter the 40-character reward wallet address and one or more reachable node URLs. The miner needs no admin API key. It checks for competing blocks about once per second and logs each round's elapsed time.</li>
+        <li>For NVIDIA CUDA 13, install <code>python -m pip install -r requirements-nvidia.txt</code>, then select <strong>NVIDIA CUDA</strong>. CUDA 12 users should install <code>cupy-cuda12x[ctk]</code> instead.</li>
+        <li>Choose the CPU worker count or NVIDIA device and start mining. The first valid submitted proof wins the block and the protocol pays the current reward.</li>
+      </ol>
+      <div class="card-title" style="margin:16px 0 8px">Supported GPUs</div>
+      <ul>
+        <li>NVIDIA CUDA-capable GPUs with compute capability 3.0 or newer, provided the installed NVIDIA driver and selected CUDA runtime still support that card.</li>
+        <li>Modern GeForce RTX, NVIDIA RTX/Quadro, Tesla, and data-center GPUs are typical compatible families. Your RTX 4050 has been hardware-tested with Helix.</li>
+        <li>CUDA 13 uses <code>cupy-cuda13x[ctk]</code>; CUDA 12 uses <code>cupy-cuda12x[ctk]</code>. Run <code>nvidia-smi</code> to see the driver-reported CUDA version.</li>
+        <li>Windows and Linux are supported by the official CuPy wheels. The current miner uses the first NVIDIA GPU and does not combine multiple GPUs.</li>
+        <li>AMD, Intel, Apple Silicon, and other non-CUDA GPUs are not supported. CPU mode remains available on those systems.</li>
+      </ul>
+      <p>Difficulty resets once to 3 at block 161. It stays at 3 through block 170, then resumes automatic adjustment every 10 blocks using a 160-second target. A solution may take more or less than the target because proof-of-work is probabilistic.</p>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Network rules and maintenance</div>
+      <ul>
+        <li>Reward schedule: 10 HLX for blocks 0-89, 2 HLX for blocks 90-299, and 10 HLX from block 300 onward.</li>
+        <li>Historical difficulty rules remain valid through block 160. Difficulty resets to 3 at block 161, stays at 3 through block 170, and can adjust again beginning at block 171.</li>
+        <li>From block 161 onward, the target average is 160 seconds. A completed 10-block window below 80 seconds raises difficulty by one; a window above 160 seconds lowers it by one.</li>
+        <li>Maximum native supply: 20,000,000 HLX.</li>
+        <li>All nodes must upgrade to protocol 10 and restart before mining or accepting block 200, when atomic token swaps activate.</li>
+        <li>At block 300, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> becomes the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
+        <li>Before upgrading or copying chain data, stop the node and back up its database.</li>
+        <li>Use <code>python helixctl.py validate</code> to verify the local chain.</li>
+      </ul>
+      <div class="alert alert-info">Helix has not received a professional security audit and should not be treated as production financial infrastructure.</div>
+    </section>
+  </div>
+</div>
+
+<!-- NODES -->
+<div id="panel-nodes" class="panel">
+  <div class="nodes-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div class="card">
+      <div class="card-title">Connected Peers</div>
+      <div id="nodes-alert"></div>
+      <div id="node-self" style="font-size:12px;color:var(--muted);margin-bottom:12px;font-family:monospace"></div>
+      <div id="peer-list" style="margin-bottom:12px"><div class="empty" style="padding:16px">No peers yet</div></div>
+      <div class="field" style="margin-bottom:8px">
+        <label>Add peer manually</label>
+        <div class="peer-add-row" style="display:flex;gap:8px">
+          <input id="peer-url" type="text" placeholder="http://host:port" style="flex:1" />
+          <button class="btn btn-primary btn-sm" id="btn-add-peer">Add</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Auto-Discovery</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+        Scans your local network for other Helix nodes and registers them automatically.
+        The background worker does this every 30 seconds.
+      </p>
+      <div id="discover-alert"></div>
+      <button class="btn btn-primary btn-full" id="btn-discover">🔍&nbsp; Scan for Nodes Now</button>
+      <div id="discover-results" style="margin-top:14px"></div>
+    </div>
+  </div>
+  <div class="nodes-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div class="card">
+      <div class="card-title">Chain Stats</div>
+      <div id="chain-stats">Loading…</div>
+      <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="btn-refresh-nodes">↻ Refresh</button>
+        <button class="btn btn-ghost btn-sm" id="btn-sync-peers">⇄ Pull longest chain</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Background Sync</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+        Every 30 s the node auto-discovers peers, pulls the longest chain, and audits every block's hash.
+      </p>
+      <button class="btn btn-ghost btn-full btn-sm" id="btn-load-cached-audit">↻ Load last background audit</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="node-section-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:0">Chain Integrity Audit</div>
+      <button class="btn btn-primary btn-sm" id="btn-run-audit">Run Full Audit</button>
+    </div>
+    <div id="audit-alert"></div>
+    <div id="audit-results"><div class="empty">Click "Run Full Audit" to verify every block.</div></div>
+  </div>
+</div>
+
+</main>
+</div><!-- #app -->
+<div id="tx-modal" class="modal-backdrop" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tx-modal-title">
+    <div class="modal-head">
+      <h2 id="tx-modal-title">Transaction details</h2>
+      <button type="button" class="btn btn-ghost modal-close" id="btn-close-tx-modal" aria-label="Close transaction details">&times;</button>
+    </div>
+    <div class="modal-body" id="tx-modal-body"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

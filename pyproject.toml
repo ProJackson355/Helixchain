@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "helix-coin"
+version = "1.0.0"
+description = "Educational peer-to-peer proof-of-work cryptocurrency implementation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "requests>=2.32",
+  "mnemonic>=0.21",
+]
+
+[project.scripts]
+helix-node = "run_node:main"
+helix-wallet = "wallet.cli:main"
+helixctl = "helixctl:main"
+
+[tool.setuptools]
+py-modules = ["run_node", "helixctl"]
+
+[tool.setuptools.packages.find]
+include = ["node*", "wallet*"]
