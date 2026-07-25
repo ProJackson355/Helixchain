@@ -11,7 +11,7 @@ Requirements: Python 3.11 or newer.
 
 When using a temporary Cloudflare tunnel, first verify
 `https://YOUR-URL.trycloudflare.com/health`, then email the working
-TryCloudflare URL to `jackson.tripp100@gmail.com` so it can be considered for
+TryCloudflare URL to `erltipper@gmail.com` so it can be considered for
 the Helix node list. TryCloudflare addresses expire when their tunnel stops, so
 send an updated URL after restarting the tunnel.
 

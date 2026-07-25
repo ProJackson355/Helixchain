@@ -39,6 +39,7 @@ database_*.json.*
 node_*.json
 peers.json
 pools.json
+submissions.json
 security_state.json
 backups/
 *.tmp

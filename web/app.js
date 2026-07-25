@@ -2676,6 +2676,30 @@ document.getElementById('btn-add-peer').addEventListener('click', async () => {
   } catch (error) { setAlert('nodes-alert', error.message || 'Could not reach that peer.'); }
 });
 
+document.getElementById('btn-submit-node').addEventListener('click', async () => {
+  const button = document.getElementById('btn-submit-node');
+  const urlInput = document.getElementById('submit-node-url');
+  const noteInput = document.getElementById('submit-node-note');
+  const url = urlInput.value.trim();
+  setAlert('submit-node-alert', '');
+  if (!/^https?:\/\//.test(url)) {
+    setAlert('submit-node-alert', 'Enter your full node URL, e.g. https://your-node.trycloudflare.com');
+    return;
+  }
+  button.disabled = true;
+  try {
+    const result = await api('POST', '/nodes/submit', { url, note: noteInput.value.trim() });
+    if (result.accepted === false) throw new Error(result.message || 'Submission rejected.');
+    setAlert('submit-node-alert', result.message || 'Submitted for review.', 'ok');
+    urlInput.value = '';
+    noteInput.value = '';
+  } catch (error) {
+    setAlert('submit-node-alert', error.message || 'Could not submit your node.');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 document.getElementById('peer-url').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-add-peer').click();
 });

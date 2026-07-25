@@ -928,7 +928,7 @@
       <div class="card-title">Expose and connect a node</div>
       <ol>
         <li>With the node running, start a tunnel: <code>cloudflared tunnel --url http://localhost:8000</code>. A quick tunnel needs no domain, but its <code>https://xxxx.trycloudflare.com</code> address changes every time it restarts.</li>
-        <li>Verify the tunnel: open <code>https://YOUR-URL.trycloudflare.com/health</code> and confirm it returns node JSON. Optionally, email a working tunnel URL to <a href="mailto:jackson.tripp100@gmail.com">jackson.tripp100@gmail.com</a> to have it considered for the shared Helix node list.</li>
+        <li>Verify the tunnel: open <code>https://YOUR-URL.trycloudflare.com/health</code> and confirm it returns node JSON. Optionally, submit your node URL from the wallet's <strong>Nodes</strong> tab ("Submit your node for the shared list") to have it considered for the shared node list.</li>
         <li>Hosting this website is <strong>optional</strong> — the node already serves the wallet locally. To put it online: in Cloudflare Pages &rarr; your project &rarr; <strong>Settings &rarr; Variables and secrets</strong> (Production scope), set <code>HELIX_NODE_URL</code> = the current tunnel URL (no trailing slash, no <code>/api</code>; multiple nodes use a JSON array for automatic failover). Only if your node <em>requires</em> an admin key, also set <code>HELIX_ADMIN_API_KEY</code> to the same value (choose Encrypt) and <code>HELIX_ENABLE_ADMIN_API</code> = <code>true</code> to allow admin actions through the site.</li>
         <li><strong>Deploy to the production branch.</strong> Pages bakes variables into a deployment, and a deploy tagged with a non-production branch only creates a preview (<code>&lt;branch&gt;.helixwallet.pages.dev</code>) — the live site will not change. Deploy with the production branch named explicitly: <code>wrangler pages deploy web --project-name=helixwallet --branch=main</code>. Use whatever <strong>Settings &rarr; Builds &amp; deployments &rarr; Production branch</strong> shows for <code>--branch</code>.</li>
         <li>Open <code>https://helixwallet.pages.dev/api/health</code>. It should return the same node JSON, and the wallet will connect on reload.</li>
@@ -1038,6 +1038,20 @@
       </p>
       <button class="btn btn-ghost btn-full btn-sm" id="btn-load-cached-audit">↻ Load last background audit</button>
     </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Submit your node for the shared list</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Running a public node? Submit its URL to be considered for the shared bootstrap list. Submissions are reviewed by the operator — they are not added or shared automatically.</p>
+    <div id="submit-node-alert"></div>
+    <div class="field">
+      <label>Your node URL (https://…)</label>
+      <input id="submit-node-url" type="text" placeholder="https://your-node.trycloudflare.com" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label>Note (optional — how to reach you, uptime, etc.)</label>
+      <input id="submit-node-note" type="text" maxlength="280" placeholder="Optional" autocomplete="off" />
+    </div>
+    <button class="btn btn-primary" id="btn-submit-node" type="button">Submit Node</button>
   </div>
   <div class="card">
     <div class="node-section-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">

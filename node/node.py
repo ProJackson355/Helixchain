@@ -7,6 +7,7 @@ from node.transaction import Transaction
 from node.node_manager import get_node
 from node.peer_manager import add_peer, get_peers, get_peer_records, has_peer, normalize_peer, record_failure, record_success
 from node.pool_registry import add_pool, add_pools, get_pools
+from node.submissions import add_submission, get_submissions
 from node.bootstrap import discover_from_bootstrap
 from node.peer_health import compatible, probe_peer
 from node.mempool import MempoolRelay
@@ -1439,6 +1440,25 @@ def public_peers():
 def list_pools():
     """Directory of known mining-pool URLs, gossiped across nodes."""
     return {"pools": get_pools()}
+
+
+@app.post("/nodes/submit")
+def submit_node(data: dict):
+    """Queue a node URL for the operator to review (not auto-added or gossiped)."""
+    if not isinstance(data, dict) or not isinstance(data.get("url"), str):
+        return {"accepted": False, "message": "Malformed submission"}
+    if len(data.get("url", "")) > 300 or len(str(data.get("note", ""))) > 280:
+        return {"accepted": False, "message": "Submission is too long"}
+    url = add_submission(data["url"], data.get("note", ""))
+    if not url:
+        return {"accepted": False, "message": "That does not look like a valid node URL."}
+    return {"accepted": True, "message": "Thanks — your node was submitted for review."}
+
+
+@app.get("/nodes/submissions")
+def node_submissions():
+    """Operator-only review queue of submitted nodes."""
+    return {"submissions": get_submissions()}
 
 
 @app.post("/pools/register")

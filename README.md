@@ -89,10 +89,10 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
-If you expose a node with TryCloudflare, verify its public `/health` endpoint
-and email the working `trycloudflare.com` URL to
-`jackson.tripp100@gmail.com` so it can be considered for the Helix node list.
-Temporary TryCloudflare URLs change when the tunnel restarts.
+If you expose a node with TryCloudflare, verify its public `/health` endpoint,
+then submit the working `trycloudflare.com` URL from the wallet's **Nodes** tab
+("Submit your node for the shared list") so it can be considered for the Helix
+node list. Temporary TryCloudflare URLs change when the tunnel restarts.
 
 ## Helix Miner
 

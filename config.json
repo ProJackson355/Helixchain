@@ -77,7 +77,8 @@
       "/sync",
       "/nodes/sync_now",
       "/nodes/discover",
-      "/nodes/audit"
+      "/nodes/audit",
+      "/nodes/submissions"
     ],
     "cors_allowed_origins": [
       "http://localhost",

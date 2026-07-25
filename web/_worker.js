@@ -14,6 +14,7 @@ const PUBLIC_ROUTES = [
   ["POST", /^\/transaction$/],
   ["POST", /^\/transaction\/[0-9a-f]{64}\/cancel$/],
   ["POST", /^\/pools\/register$/],
+  ["POST", /^\/nodes\/submit$/],
 ];
 
 const ADMIN_ROUTES = [
