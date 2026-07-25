@@ -1,8 +1,6 @@
 # Helix Coin 1.0.0
 
-Helix is an educational proof-of-work cryptocurrency project with encrypted wallets, custom tokens, peer discovery, mempool gossip, block relay, fork handling, checkpoints, dynamic difficulty, and network hardening.
-
-> Helix has not received a professional security audit. Do not use it to protect real money or deploy it as a public financial network without independent review and extensive testing.
+Helix is an educational proof-of-work cryptocurrency project with encrypted wallets, custom tokens, peer discovery, mempool gossip, block relay, fork handling, checkpoints, dynamic difficulty, and network hardening.  
 
 ## Updates
 
