@@ -19,6 +19,7 @@ TOKEN_NONCE_RE = re.compile(r"^[0-9a-f]{32}$")
 TOKEN_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{1,11}$")
 MAX_TOKEN_UNITS = 9_007_199_254_740_991
 ZERO_ADDRESS = "0" * 40
+MAX_HASH = 16 ** 64 - 1  # largest possible 256-bit SHA-256 digest value
 SWAP_FEE_NUMERATOR = 997
 SWAP_FEE_DENOMINATOR = 1000
 
@@ -87,6 +88,17 @@ class Block:
             self.nonce += 1
             self.hash = self.calculate_hash()
 
+    def mine_to_target(self, target: int) -> None:
+        """Bitcoin-style search: find a nonce whose hash is <= a numeric target.
+
+        This generalises leading-zero difficulty (which is just the special case
+        target == 16**(64-difficulty) - 1) so difficulty can be tuned finely
+        between whole hex levels instead of only in 16x jumps.
+        """
+        while int(self.hash, 16) > target:
+            self.nonce += 1
+            self.hash = self.calculate_hash()
+
 
 class Blockchain:
     def __init__(self, consensus: dict | None = None, database_path: str | Path | None = None):
@@ -138,6 +150,21 @@ class Blockchain:
         self.difficulty_activation_height = int(
             setting("difficulty_activation_height", "HELIX_DIFFICULTY_ACTIVATION_HEIGHT", 10)
         )
+        # From this height on, proof of work uses a fine-grained numeric target
+        # (Bitcoin-style) instead of whole leading-zero levels. Below it the
+        # legacy leading-zero rule is preserved exactly, so existing blocks stay
+        # valid. Keep this above the current chain tip when enabling it.
+        self.fine_difficulty_activation_height = int(setting(
+            "fine_difficulty_activation_height", "HELIX_FINE_DIFFICULTY_HEIGHT", 100000000
+        ))
+        # Fine-difficulty retarget: every difficulty_adjustment_interval blocks,
+        # if the average block time over the window is below this it raises the
+        # difficulty, and if above it lowers it. Difficulty rises without an
+        # upper cap so it never needs manual adjustment; the only floor is
+        # min_difficulty (so blocks can't become trivially easy).
+        self.fine_target_block_time_seconds = int(setting(
+            "fine_target_block_time_seconds", "HELIX_FINE_TARGET_BLOCK_TIME", 120
+        ))
         self.token_metadata_activation_height = int(
             setting("token_metadata_activation_height", "HELIX_TOKEN_METADATA_ACTIVATION_HEIGHT", 41)
         )
@@ -252,7 +279,7 @@ class Blockchain:
                     )
                     if tx.tx_type in {"token_mint", "token_buy"}:
                         token_accounts.add((tx.mint_address, tx.receiver))
-                    elif tx.tx_type in {"token_transfer", "token_sell", "token_pool_create", "token_swap"}:
+                    elif tx.tx_type in {"token_transfer", "token_sell", "token_pool_create", "token_swap", "token_burn"}:
                         token_accounts.add((tx.mint_address, tx.sender))
                         if tx.tx_type == "token_transfer":
                             token_accounts.add((tx.mint_address, tx.receiver))
@@ -568,6 +595,17 @@ class Blockchain:
             if token["dad_address"] is None or tx.sender != token["dad_address"]:
                 return "only the current DAD authority can change token authority"
             token["dad_address"] = None if tx.receiver == ZERO_ADDRESS else tx.receiver
+            return None
+
+        if tx.tx_type == "token_burn":
+            if token["dad_address"] is None or tx.sender != token["dad_address"]:
+                return "only the token DAD authority can burn supply"
+            if tx.receiver != tx.sender:
+                return "token burn receiver must match its sender"
+            if token_balances[(tx.mint_address, tx.sender)] < tx.amount:
+                return "token burn exceeds the DAD balance"
+            token_balances[(tx.mint_address, tx.sender)] -= tx.amount
+            token_supply[tx.mint_address] -= tx.amount
             return None
 
         if tx.tx_type in exchange_types:
@@ -932,8 +970,8 @@ class Blockchain:
             raise ValueError("invalid miner address")
 
         with self._lock:
-            block, difficulty = self.create_mining_candidate(miner_address)
-            block.mine(difficulty)
+            block, _difficulty, target = self.create_mining_candidate(miner_address)
+            block.mine_to_target(target)
 
             valid, reason = self.validate_next_block(block)
             if not valid:
@@ -948,8 +986,13 @@ class Blockchain:
             self.save()
             return block
 
-    def create_mining_candidate(self, miner_address: str) -> tuple[Block, int]:
-        """Return a non-mutating snapshot miners can hash and submit."""
+    def create_mining_candidate(self, miner_address: str) -> tuple[Block, int, int]:
+        """Return a non-mutating snapshot miners can hash and submit.
+
+        Returns (block, difficulty, target). `difficulty` is the whole-level
+        difficulty kept for display/compatibility; `target` is the exact numeric
+        target the proof must satisfy (int(hash,16) <= target).
+        """
         if not self._valid_address(miner_address):
             raise ValueError("invalid miner address")
         with self._lock:
@@ -958,7 +1001,11 @@ class Blockchain:
             transactions = list(self.pending_transactions)
             transactions.append(self._make_reward(index, miner_address, previous_hash))
             block = Block(index, transactions, previous_hash)
-            return block, self.expected_difficulty(index, self.chain)
+            return (
+                block,
+                self.expected_difficulty(index, self.chain),
+                self.expected_target(index, self.chain),
+            )
 
     def find_transaction(self, tx_id: str):
         return self._transaction_index.get(tx_id, (None, None))
@@ -999,9 +1046,9 @@ class Blockchain:
             return False, "block timestamp is too far in the future", total_supply
         if block.calculate_hash() != block.hash:
             return False, "block hash does not match contents", total_supply
-        expected_difficulty = self.expected_difficulty(block.index, chain_context)
-        if not block.hash.startswith("0" * expected_difficulty):
-            return False, f"proof of work is invalid (expected difficulty {expected_difficulty})", total_supply
+        expected_target = self.expected_target(block.index, chain_context)
+        if not self.hash_meets_target(block.hash, expected_target):
+            return False, "proof of work is invalid (hash is above the required target)", total_supply
         if not block.transactions:
             return False, "block contains no transactions", total_supply
 
@@ -1163,9 +1210,67 @@ class Blockchain:
             return self.adaptive_target_block_time
         return self.target_block_time
 
+    @staticmethod
+    def difficulty_to_target(difficulty: int) -> int:
+        """The numeric target equal to a whole leading-zero difficulty level.
+
+        A hash has `difficulty` leading hex zeros iff its value is <= this, so
+        the legacy rule is exactly the numeric-target rule at these points.
+        """
+        difficulty = max(0, min(64, int(difficulty)))
+        return 16 ** (64 - difficulty) - 1
+
+    @staticmethod
+    def hash_meets_target(block_hash: str, target: int) -> bool:
+        try:
+            return int(block_hash, 16) <= target
+        except (TypeError, ValueError):
+            return False
+
+    def expected_target(self, next_index: int, chain=None) -> int:
+        """Required proof-of-work target for the block at next_index.
+
+        Below the fine-difficulty activation height this returns the target that
+        is exactly equivalent to the legacy leading-zero difficulty, so historic
+        blocks validate unchanged. At and above it, the target is retargeted
+        smoothly (Bitcoin-style) by the ratio of actual to expected time, bounded
+        to a 4x move per window and clamped to the configured difficulty range.
+        """
+        chain = self.chain if chain is None else chain
+        activation = self.fine_difficulty_activation_height
+        if next_index < activation:
+            return self.difficulty_to_target(self.expected_difficulty(next_index, chain))
+
+        interval = max(2, self.difficulty_adjustment_interval)
+        easiest = self.difficulty_to_target(self.min_difficulty)   # largest target = difficulty floor
+        # Expected time for one window: 2 minutes per block by default, across
+        # the (interval - 1) gaps between the window's blocks.
+        expected = max(1, self.fine_target_block_time_seconds * max(1, interval - 1))
+        # Seed from the difficulty in force at the activation boundary.
+        target = self.difficulty_to_target(self.expected_difficulty(activation, chain))
+        for boundary in range(activation + interval, next_index + 1, interval):
+            if boundary > len(chain):
+                continue
+            window = chain[boundary - interval:boundary]
+            if len(window) < interval:
+                continue
+            elapsed = max(1, int(window[-1].timestamp - window[0].timestamp))
+            # Average block time above target (elapsed > expected) -> a larger
+            # target -> easier. Below target -> a smaller target -> harder.
+            adjusted = target * elapsed // expected
+            adjusted = min(adjusted, target * 4)      # ease at most 4x per window
+            adjusted = max(adjusted, target // 4)      # harden at most 4x per window
+            # Floor difficulty at min_difficulty (largest target); no upper cap,
+            # so difficulty can keep rising forever without manual changes.
+            target = min(easiest, max(1, adjusted))
+        return target
+
     def block_work(self, block: Block, chain_prefix=None) -> int:
-        difficulty = self.expected_difficulty(block.index, chain_prefix or [])
-        return 16 ** difficulty
+        if block.index < self.fine_difficulty_activation_height:
+            difficulty = self.expected_difficulty(block.index, chain_prefix or [])
+            return 16 ** difficulty
+        target = self.expected_target(block.index, chain_prefix or [])
+        return MAX_HASH // (target + 1)
 
     def chain_work(self, chain=None) -> int:
         chain = self.chain if chain is None else chain

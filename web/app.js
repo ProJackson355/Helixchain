@@ -270,6 +270,56 @@ async function overwriteWallet(name, password, privateKey, publicKey, seedPhrase
   return saveWallet(name, password, privateKey, publicKey, seedPhrase);
 }
 
+// Download the wallet's encrypted record as a portable backup file. The file
+// stays password-protected — it is the same ciphertext held in localStorage,
+// so it can be restored on any device but is useless without the password.
+function downloadWalletBackup(name) {
+  const entry = _loadStore()[name];
+  if (!entry) return false;
+  const payload = {
+    type: 'helix-wallet-backup',
+    version: 1,
+    name,
+    address: entry.address,
+    exported_at: new Date().toISOString(),
+    entry,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `helix-wallet-${name.replace(/[^a-z0-9_-]+/gi, '_')}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+
+// Load a backup file back into local storage. Validates the structure but
+// never needs the password here — the record stays encrypted until unlocked.
+async function importWalletBackup(file, preferredName) {
+  let data;
+  try { data = JSON.parse(await file.text()); }
+  catch { throw new Error('That file is not valid JSON.'); }
+  const entry = data && data.entry;
+  if (!data || data.type !== 'helix-wallet-backup' || !entry || typeof entry !== 'object') {
+    throw new Error('That does not look like a Helix wallet backup file.');
+  }
+  for (const field of ['address', 'pubHex', 'saltHex', 'ivHex', 'cipherHex']) {
+    if (typeof entry[field] !== 'string' || !entry[field]) {
+      throw new Error('The backup file is missing required wallet data.');
+    }
+  }
+  const name = (preferredName || data.name || '').trim();
+  if (!name) throw new Error('Enter a name for the restored wallet.');
+  const store = _loadStore();
+  if (store[name]) throw new Error(`A wallet named "${name}" already exists here. Choose a different name.`);
+  store[name] = entry;
+  _saveStore(store);
+  return name;
+}
+
 // ============================================================
 // SECTION 4 — Node connection
 // ============================================================
@@ -405,11 +455,12 @@ function hasActiveSession() {
 
 function persistSession() {
   const expiresAt = Date.now() + SESSION_LIFETIME_MS;
+  // Private keys are NEVER stored. We keep only a non-sensitive breadcrumb (the
+  // wallet name) so the unlock form can pre-fill after a page refresh; the user
+  // re-enters their password, which decrypts the key held in localStorage. The
+  // decrypted key exists only in memory while the wallet is unlocked.
   sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
     name: S.name,
-    address: S.address,
-    privateKeyHex: _bytesToHex(S.privateKey),
-    publicKeyHex: _bytesToHex(S.publicKey),
     expiresAt,
   }));
   scheduleSessionExpiry(expiresAt);
@@ -417,39 +468,19 @@ function persistSession() {
 
 async function restoreSession() {
   const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  clearSessionRecord();
   if (!raw) return false;
-  let expired = false;
   try {
     const saved = JSON.parse(raw);
-    const privateKeyHex = String(saved.privateKeyHex || '');
-    const publicKeyHex = String(saved.publicKeyHex || '');
     const expiresAt = Number(saved.expiresAt);
-    expired = Number.isFinite(expiresAt) && expiresAt <= Date.now();
-    const entry = _loadStore()[saved.name];
-    if (typeof saved.name !== 'string' || !entry
-        || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
-        || !/^[0-9a-f]{64}$/.test(privateKeyHex)
-        || !/^(02|03)[0-9a-f]{64}$/.test(publicKeyHex)
-        || saved.address !== entry.address || publicKeyHex !== entry.pubHex) {
-      throw new Error('invalid or expired session');
+    if (typeof saved.name === 'string' && _loadStore()[saved.name]
+        && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+      // No key is stored, so we cannot silently restore the unlocked wallet;
+      // pre-fill the name and require the password again.
+      switchToLoginTab(saved.name, 'Unlock your wallet to continue.');
     }
-
-    const privateKey = _hexToBytes(privateKeyHex);
-    S = {
-      name: saved.name,
-      address: saved.address,
-      privateKey,
-      publicKey: _hexToBytes(publicKeyHex),
-    };
-    afterLogin({ persist: false, expiresAt });
-    return true;
-  } catch (_) {
-    clearSessionRecord();
-    if (expired) {
-      setAlert('login-alert', 'Your one-hour session expired. Unlock your wallet to continue.', 'info');
-    }
-    return false;
-  }
+  } catch (_) {}
+  return false;
 }
 
 // ============================================================
@@ -609,6 +640,7 @@ function showPanel(name) {
   if (name === 'history')   loadHistory();
   if (name === 'activity')  loadActivity(ACTIVITY_PAGE);
   if (name === 'nodes')     loadNodes();
+  if (name === 'pools')     loadPools();
 }
 
 function setMobileNav(open) {
@@ -796,6 +828,38 @@ function lockWallet(toastMessage = 'Wallet locked', alertMessage = '') {
 
 document.getElementById('btn-logout').addEventListener('click', () => lockWallet());
 
+document.getElementById('btn-export-wallet').addEventListener('click', () => {
+  setAlert('backup-alert', '');
+  if (!hasActiveSession()) { setAlert('backup-alert', 'Unlock a wallet first.'); return; }
+  if (downloadWalletBackup(S.name)) {
+    setAlert('backup-alert', 'Encrypted backup downloaded. Keep the file and its password safe.', 'ok');
+    toast('Backup downloaded', 'ok');
+  } else {
+    setAlert('backup-alert', 'Could not find this wallet to back up.');
+  }
+});
+
+document.getElementById('btn-restore-file').addEventListener('click', async () => {
+  const button = document.getElementById('btn-restore-file');
+  const fileInput = document.getElementById('restore-file');
+  const preferredName = document.getElementById('restore-name').value.trim();
+  setAlert('restore-alert', '');
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) { setAlert('restore-alert', 'Choose a backup file first.'); return; }
+  button.disabled = true;
+  try {
+    const restored = await importWalletBackup(file, preferredName);
+    fileInput.value = '';
+    document.getElementById('restore-name').value = '';
+    switchToLoginTab(restored, 'Wallet restored. Unlock it with the password you set for it.');
+    toast('Wallet restored', 'ok');
+  } catch (error) {
+    setAlert('restore-alert', error.message || 'Could not restore that file.');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 document.getElementById('btn-delete-wallet').addEventListener('click', async () => {
   if (!hasActiveSession()) return;
   const button = document.getElementById('btn-delete-wallet');
@@ -855,8 +919,7 @@ async function loadDashboard() {
     HLX_TOTAL_SUPPLY = Number(stats.total_supply || 0);
     NETWORK_STATS = stats;
     renderSendAssets();
-    document.getElementById('dash-balance').textContent =
-      bal.balance !== undefined ? bal.balance : '—';
+    document.getElementById('dash-balance').textContent = formatWalletValue(walletTotalValueHlx());
     document.getElementById('dash-pending-count').textContent =
       pend.pending ? pend.pending.length : '—';
     renderDashboardTokens();
@@ -1047,6 +1110,31 @@ let TOKEN_CHART_WIDTH = 720;
 let TOKEN_CHART_VIEW = null;
 let TOKEN_CHART_POINTS = [];
 let TOKEN_CHART_TOKEN = null;
+let TOKEN_CHART_INTERVAL = null; // forced candle width in seconds; null = auto-fit
+const TOKEN_CHART_RANGES = [
+  { key: 'minute', label: 'Minute', seconds: 60 },
+  { key: 'hour', label: 'Hour', seconds: 3600 },
+  { key: 'day', label: 'Day', seconds: 86400 },
+  { key: 'month', label: 'Month', seconds: 2592000 },
+  { key: 'auto', label: 'Auto', seconds: null },
+];
+
+// Earliest confirmed point and "now" bound the whole selectable timeline.
+function tokenChartBounds(points) {
+  const stamps = points.map(point => point.timestamp).filter(Number.isFinite);
+  const earliest = stamps.length ? Math.min(...stamps) : Date.now() / 1000 - 30;
+  const latest = Math.max(Date.now() / 1000, stamps.length ? Math.max(...stamps) : 0);
+  return { earliest, latest };
+}
+
+// Format epoch seconds as a local "YYYY-MM-DDTHH:MM:SS" string for a
+// <input type="datetime-local">. Parsing back is `new Date(value)` (local).
+function toLocalDatetimeValue(seconds) {
+  const date = new Date(seconds * 1000);
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 
 function chartRangePoints(points, startSeconds, endSeconds) {
   if (!points.length) return [];
@@ -1063,6 +1151,7 @@ function chartRangePoints(points, startSeconds, endSeconds) {
 }
 
 function chartCandleInterval(spanSeconds) {
+  if (TOKEN_CHART_INTERVAL) return TOKEN_CHART_INTERVAL;
   const targetCandles = Math.max(18, Math.min(90, Math.floor(TOKEN_CHART_WIDTH / 12)));
   const desired = spanSeconds / targetCandles;
   const intervals = [1, 5, 10, 15, 30, 60, 300, 900, 1800, 3600, 14400, 21600, 43200, 86400, 604800];
@@ -1257,7 +1346,7 @@ function bindTokenChartInteractions(container, allPoints, metrics) {
 }
 
 function renderTokenPriceChart(container, token, rawPoints) {
-  if (TOKEN_CHART_TOKEN?.mint_address !== token.mint_address) TOKEN_CHART_VIEW = null;
+  if (TOKEN_CHART_TOKEN?.mint_address !== token.mint_address) { TOKEN_CHART_VIEW = null; TOKEN_CHART_INTERVAL = null; }
   TOKEN_CHART_TOKEN = token;
   TOKEN_CHART_POINTS = rawPoints;
   const allPoints = rawPoints.map(point => ({ ...point, price: marketPointPrice(point, token.decimals) }))
@@ -1327,9 +1416,17 @@ function renderTokenPriceChart(container, token, rawPoints) {
   const realUpdates = points.filter(point => !point.carried).length;
   container.classList.remove('bullish', 'bearish', 'neutral');
   container.classList.add(trend);
+  const { earliest: chartEarliest, latest: chartLatest } = tokenChartBounds(allPoints);
+  const rangeButtons = TOKEN_CHART_RANGES.map(range =>
+    `<button type="button" class="chart-range-btn${TOKEN_CHART_INTERVAL === range.seconds ? ' active' : ''}" data-chart-range="${range.key}">${range.label}</button>`
+  ).join('');
   container.innerHTML = `<div class="price-chart-head"><strong>Confirmed price history</strong>
       <span class="price-chart-summary">Current ${escapeHtml(compactPrice(current))} HLX &middot; Low ${escapeHtml(compactPrice(low))} &middot; High ${escapeHtml(compactPrice(high))} &middot; <strong class="chart-trend ${trend}">${change >= 0 ? '+' : ''}${escapeHtml(change.toFixed(2))}%</strong></span></div>
     <div class="price-chart-controls">
+      <div class="price-chart-ranges" role="group" aria-label="Candle interval">${rangeButtons}</div>
+      <label class="chart-start-control">Start
+        <input id="token-chart-start" type="datetime-local" step="1" min="${toLocalDatetimeValue(chartEarliest)}" max="${toLocalDatetimeValue(chartLatest)}" value="${toLocalDatetimeValue(start)}" aria-label="Choose the date and time the chart starts" />
+      </label>
       <label class="chart-size-control">Height
         <input id="token-chart-height" type="range" min="${TOKEN_CHART_MIN_HEIGHT}" max="${TOKEN_CHART_MAX_HEIGHT}" step="10" value="${TOKEN_CHART_HEIGHT}" aria-label="Chart height" />
         <span>${TOKEN_CHART_HEIGHT}px</span>
@@ -1494,6 +1591,28 @@ document.getElementById('btn-token-load-metadata').addEventListener('click', asy
 function tokenBalanceUnits(token) {
   try { return BigInt(token.balance || 0); }
   catch (_) { return 0n; }
+}
+
+// Total wallet worth valued in HLX: the raw HLX balance plus each held token's
+// balance converted through its pool price. Decimals cancel because both the
+// balance and the pool token reserve are in the same base units:
+//   value_HLX = balance_units * pool_hlx_reserve / pool_token_reserve
+function walletTotalValueHlx() {
+  let total = Number(HLX_BALANCE) || 0;
+  for (const token of TOKENS) {
+    const balance = Number(tokenBalanceUnits(token));
+    const hlxReserve = Number(token.pool_hlx_reserve || 0);
+    const tokenReserve = Number(token.pool_token_reserve || 0);
+    if (balance > 0 && hlxReserve > 0 && tokenReserve > 0) {
+      total += balance * hlxReserve / tokenReserve;
+    }
+  }
+  return total;
+}
+
+function formatWalletValue(value) {
+  if (!Number.isFinite(value)) return '—';
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 function heldTokens() {
@@ -1729,6 +1848,113 @@ function updateTokenSwapQuote() {
     : `Your balance: ${formatTokenAmount(source.balance, source.decimals)} ${source.symbol}`;
 }
 
+// ---- Dedicated Swap tab ---------------------------------------------------
+function swappableSources() {
+  return TOKENS.filter(token => tokenBalanceUnits(token) > 0n && tokenPoolActive(token));
+}
+
+function swappableTargets(sourceMint) {
+  return TOKENS.filter(token => token.mint_address !== sourceMint && tokenPoolActive(token));
+}
+
+function renderSwapPane() {
+  const sourceSelect = document.getElementById('swap-source');
+  const targetSelect = document.getElementById('swap-target');
+  const body = document.getElementById('swap-body');
+  const empty = document.getElementById('swap-empty');
+  const button = document.getElementById('btn-swap-tokens');
+  if (!sourceSelect || !targetSelect || !body || !empty) return;
+  const sources = swappableSources();
+  if (!sources.length) {
+    body.style.display = 'none';
+    empty.hidden = false;
+    return;
+  }
+  body.style.display = '';
+  empty.hidden = true;
+  const previousSource = sourceSelect.value;
+  const previousTarget = targetSelect.value;
+  sourceSelect.replaceChildren(...sources.map(token =>
+    new Option(`${token.name} (${token.symbol}) — balance ${formatTokenAmount(token.balance, token.decimals)}`, token.mint_address)));
+  if (sources.some(token => token.mint_address === previousSource)) sourceSelect.value = previousSource;
+  const targets = swappableTargets(sourceSelect.value);
+  targetSelect.replaceChildren(...targets.map(token =>
+    new Option(`${token.name} (${token.symbol})`, token.mint_address)));
+  if (targets.some(token => token.mint_address === previousTarget)) targetSelect.value = previousTarget;
+  const swapActive = NETWORK_STATS.token_swap_active !== false;
+  if (button) {
+    button.disabled = !swapActive || !targets.length;
+    button.title = swapActive ? '' : `Token-to-token swaps activate at block ${NETWORK_STATS.token_swap_activation_height ?? 200}.`;
+  }
+  updateStandaloneSwapQuote();
+}
+
+function updateStandaloneSwapQuote() {
+  const sourceSelect = document.getElementById('swap-source');
+  const targetSelect = document.getElementById('swap-target');
+  const amountInput = document.getElementById('swap-amount');
+  const quote = document.getElementById('swap-quote');
+  if (!sourceSelect || !targetSelect || !amountInput || !quote) return;
+  const source = TOKENS.find(token => token.mint_address === sourceSelect.value);
+  const target = TOKENS.find(token => token.mint_address === targetSelect.value);
+  if (!source || !target) {
+    quote.textContent = 'Select two tokens that both have active HLX pools.';
+    return;
+  }
+  let amount = 0n;
+  try { amount = BigInt(parseTokenAmount(amountInput.value, source.decimals)); } catch (_) {}
+  const { routedHlx, received } = tokenSwapQuote(source, target, amount);
+  quote.textContent = received > 0n
+    ? `Estimated receive: ${formatTokenAmount(received, target.decimals)} ${target.symbol} (routed value: ${routedHlx} HLX)`
+    : `Your balance: ${formatTokenAmount(source.balance, source.decimals)} ${source.symbol}`;
+}
+
+async function submitStandaloneSwap() {
+  if (!hasActiveSession()) return;
+  const sourceSelect = document.getElementById('swap-source');
+  const targetSelect = document.getElementById('swap-target');
+  const button = document.getElementById('btn-swap-tokens');
+  setAlert('swap-alert', '');
+  const source = TOKENS.find(token => token.mint_address === sourceSelect?.value);
+  const target = TOKENS.find(token => token.mint_address === targetSelect?.value);
+  if (!source || !target || !button) { setAlert('swap-alert', 'Select two tokens with active pools.'); return; }
+  if (!tokenPoolActive(source) || !tokenPoolActive(target)) { setAlert('swap-alert', 'Both tokens need an active HLX pool.'); return; }
+  const original = button.textContent;
+  try {
+    const amount = parseTokenAmount(document.getElementById('swap-amount').value, source.decimals);
+    if (BigInt(amount) > tokenBalanceUnits(source)) throw new Error(`Swap exceeds your confirmed ${source.symbol} balance.`);
+    const { received } = tokenSwapQuote(source, target, BigInt(amount));
+    if (received <= 0n) throw new Error('This swap is too small for the current pool liquidity.');
+    const minimum = received > 1n ? received * 99n / 100n : 1n;
+    if (minimum > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Swap output is above the network limit.');
+    const payload = {
+      tx_type: 'token_swap', sender: S.address, receiver: S.address,
+      amount, mint_address: source.mint_address,
+      target_mint_address: target.mint_address,
+      nonce: _hexRandom(16), min_receive: Number(minimum),
+    };
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span> Signing&hellip;';
+    payload.signature = await signPayload(S.privateKey, payload);
+    payload.public_key = await exportPublicKeyPEM(S.publicKey);
+    button.innerHTML = '<span class="spinner"></span> Submitting&hellip;';
+    const result = await api('POST', '/transaction', payload);
+    if (result.message !== 'Transaction added') throw new Error(result.message || 'Token swap was rejected.');
+    setAlert('swap-alert', `${source.symbol} → ${target.symbol} swap submitted atomically with 1% slippage protection. Mine a block to confirm it.`, 'ok');
+    toast('Token swap submitted', 'ok');
+  } catch (error) {
+    setAlert('swap-alert', error.message || 'Token swap failed.');
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+document.getElementById('btn-swap-tokens').addEventListener('click', submitStandaloneSwap);
+document.getElementById('swap-source').addEventListener('change', renderSwapPane);
+document.getElementById('swap-target').addEventListener('change', updateStandaloneSwapQuote);
+document.getElementById('swap-amount').addEventListener('input', updateStandaloneSwapQuote);
+
 function selectedToken() {
   const mint = document.getElementById('token-select').value;
   return TOKENS.find(token => token.mint_address === mint) || null;
@@ -1739,6 +1965,8 @@ function renderSelectedToken() {
   const info = document.getElementById('token-selected-info');
   const transferButton = document.getElementById('btn-token-transfer');
   const mintButton = document.getElementById('btn-token-mint');
+  const burnButton = document.getElementById('btn-token-burn');
+  const burnNote = document.getElementById('token-burn-note');
   const authorityControls = document.getElementById('token-authority-controls');
   const poolControls = document.getElementById('token-pool-controls');
   const poolAddControls = document.getElementById('token-pool-add-controls');
@@ -1747,6 +1975,8 @@ function renderSelectedToken() {
     info.innerHTML = emptyTokenMarkup('No held or DAD-managed tokens are available.');
     transferButton.style.display = 'none';
     mintButton.style.display = 'none';
+    burnButton.style.display = 'none';
+    if (burnNote) burnNote.hidden = true;
     authorityControls.style.display = 'none';
     poolControls.style.display = 'none';
     poolAddControls.style.display = 'none';
@@ -1767,6 +1997,9 @@ function renderSelectedToken() {
   const controlsDad = token.dad_address === S.address;
   transferButton.style.display = tokenBalanceUnits(token) > 0n ? '' : 'none';
   mintButton.style.display = controlsDad ? '' : 'none';
+  const canBurn = controlsDad && tokenBalanceUnits(token) > 0n;
+  burnButton.style.display = canBurn ? '' : 'none';
+  if (burnNote) burnNote.hidden = !canBurn;
   authorityControls.style.display = controlsDad ? '' : 'none';
   poolControls.style.display = controlsDad && !tokenPoolActive(token) ? '' : 'none';
   poolAddControls.style.display = controlsDad && tokenPoolActive(token) ? '' : 'none';
@@ -1805,6 +2038,7 @@ function renderTokens() {
   renderSelectedToken();
   renderDashboardTokens();
   renderDiscoveryTokens();
+  renderSwapPane();
 }
 
 async function loadTokens() {
@@ -1833,7 +2067,10 @@ document.getElementById('btn-refresh-tokens').addEventListener('click', loadToke
 document.getElementById('btn-refresh-discover-tokens').addEventListener('click', loadTokens);
 document.getElementById('token-select').addEventListener('change', renderSelectedToken);
 document.querySelectorAll('.token-tab').forEach(tab =>
-  tab.addEventListener('click', () => showTokenPane(tab.dataset.tokenPane)));
+  tab.addEventListener('click', () => {
+    showTokenPane(tab.dataset.tokenPane);
+    if (tab.dataset.tokenPane === 'swap') renderSwapPane();
+  }));
 document.getElementById('btn-dash-tokens').addEventListener('click', () => {
   showPanel('tokens');
   showTokenPane('wallet');
@@ -1923,6 +2160,40 @@ document.getElementById('token-market-detail').addEventListener('change', event 
     const container = document.getElementById('token-price-chart');
     if (container && TOKEN_CHART_TOKEN) renderTokenPriceChart(container, TOKEN_CHART_TOKEN, TOKEN_CHART_POINTS);
   }
+});
+
+// Candle interval buttons (Minute / Hour / Day / Month / Auto).
+document.getElementById('token-market-detail').addEventListener('click', event => {
+  const button = event.target.closest('[data-chart-range]');
+  if (!button) return;
+  const container = document.getElementById('token-price-chart');
+  if (!container || !TOKEN_CHART_TOKEN) return;
+  const range = TOKEN_CHART_RANGES.find(item => item.key === button.dataset.chartRange);
+  if (!range) return;
+  TOKEN_CHART_INTERVAL = range.seconds;
+  if (range.seconds) {
+    // Frame a sensible window at this granularity: up to ~60 candles ending now.
+    const { earliest, latest } = tokenChartBounds(TOKEN_CHART_POINTS);
+    const span = Math.min(Math.max(latest - earliest, range.seconds), range.seconds * 60);
+    TOKEN_CHART_VIEW = { start: latest - span, end: latest };
+  } else {
+    TOKEN_CHART_VIEW = null; // Auto refits the whole history.
+  }
+  renderTokenPriceChart(container, TOKEN_CHART_TOKEN, TOKEN_CHART_POINTS);
+});
+
+// Start date/time input: pick exactly when the chart begins. Re-rendering with
+// the cropped window lets the Y-axis rescale, so small values stay readable
+// once early spikes are excluded.
+document.getElementById('token-market-detail').addEventListener('change', event => {
+  if (!event.target.matches('#token-chart-start')) return;
+  const container = document.getElementById('token-price-chart');
+  if (!container || !TOKEN_CHART_TOKEN) return;
+  const chosenStart = new Date(event.target.value).getTime() / 1000;
+  if (!Number.isFinite(chosenStart)) return;
+  const { latest } = tokenChartBounds(TOKEN_CHART_POINTS);
+  TOKEN_CHART_VIEW = { start: chosenStart, end: latest };
+  renderTokenPriceChart(container, TOKEN_CHART_TOKEN, TOKEN_CHART_POINTS);
 });
 
 document.getElementById('btn-token-create').addEventListener('click', async () => {
@@ -2166,6 +2437,41 @@ async function submitTokenAction(txType) {
 document.getElementById('btn-token-transfer').addEventListener('click', () => submitTokenAction('token_transfer'));
 document.getElementById('btn-token-mint').addEventListener('click', () => submitTokenAction('token_mint'));
 
+async function submitTokenBurn() {
+  if (!hasActiveSession()) return;
+  const token = selectedToken();
+  setAlert('token-action-alert', '');
+  try {
+    if (!token) throw new Error('Select a confirmed token first.');
+    if (token.dad_address !== S.address) throw new Error('Only the DAD authority can burn this token.');
+    const amount = parseTokenAmount(document.getElementById('token-amount').value, token.decimals);
+    if (BigInt(amount) > tokenBalanceUnits(token)) throw new Error('You cannot burn more than your DAD balance.');
+    // A burn destroys tokens from the DAD's own balance, so it is sent to self.
+    const payload = {
+      tx_type: 'token_burn', sender: S.address, receiver: S.address, amount,
+      mint_address: token.mint_address, nonce: _hexRandom(16),
+    };
+    const button = document.getElementById('btn-token-burn');
+    button.disabled = true;
+    const original = button.textContent;
+    button.innerHTML = '<span class="spinner"></span> Signing&hellip;';
+    try {
+      payload.signature = await signPayload(S.privateKey, payload);
+      payload.public_key = await exportPublicKeyPEM(S.publicKey);
+      const result = await api('POST', '/transaction', payload);
+      if (result.message !== 'Transaction added') throw new Error(result.message || 'Burn was rejected.');
+      setAlert('token-action-alert', 'Burn submitted. Mine a block to reduce the supply.', 'ok');
+      toast('Burn submitted', 'ok');
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  } catch (error) {
+    setAlert('token-action-alert', error.message || 'Burn failed.');
+  }
+}
+document.getElementById('btn-token-burn').addEventListener('click', submitTokenBurn);
+
 async function submitDadChange(revoke = false) {
   if (!hasActiveSession()) return;
   const token = selectedToken();
@@ -2360,9 +2666,13 @@ document.getElementById('btn-add-peer').addEventListener('click', async () => {
     const payload = { node: url };
     if (!NODE_URL.endsWith('/api')) payload.self_url = window.location.origin;
     const r = await api('POST', '/nodes/register', payload);
-    setAlert('nodes-alert', r.message || 'Added.', 'ok');
+    setAlert('nodes-alert', 'Peer added — verifying reachability…', 'ok');
     document.getElementById('peer-url').value = '';
     loadNodes();
+    // Best-effort immediate probe so the status updates quickly instead of
+    // waiting for the next background sync. Ignored if admin routes are off.
+    try { await api('POST', '/nodes/sync_now'); } catch (_) {}
+    setTimeout(loadNodes, 2500);
   } catch (error) { setAlert('nodes-alert', error.message || 'Could not reach that peer.'); }
 });
 
@@ -2421,7 +2731,19 @@ async function runAudit(cached) {
   finally { btn.disabled = false; btn.textContent = 'Run Full Audit'; hideSyncPill(); }
 }
 
+let AUDIT_DATA = null;
+let AUDIT_PAGE = 1;
+const AUDIT_PAGE_SIZE = 25;
+
 function renderAudit(data) {
+  AUDIT_DATA = data;
+  AUDIT_PAGE = 1;
+  renderAuditView();
+}
+
+function renderAuditView() {
+  const data = AUDIT_DATA;
+  if (!data) return;
   const res       = document.getElementById('audit-results');
   const li        = data.local_integrity || {};
   const blocks    = li.blocks || [];
@@ -2434,9 +2756,31 @@ function renderAudit(data) {
     <div><strong>${allOk ? 'Chain intact' : 'Issues found'}</strong><br>
       <span style="font-size:12px">${escapeHtml(blocks.length)} blocks · ${escapeHtml(bad.length)} fault(s) · ${escapeHtml(conflicts.length)} conflict(s) · ${escapeHtml(fetched.length)} fetched · ${escapeHtml(data.peers_checked||0)} peers</span>
     </div></div>`;
-  const tableHtml = `<div class="audit-grid" style="margin-bottom:16px">
+
+  // Always surface any faulty blocks in full, even when the list is paginated.
+  const faultsHtml = bad.length ? `<div class="card-title" style="margin-bottom:8px">Faulty blocks</div>
+    <div class="audit-grid" style="margin-bottom:16px">
+      <div class="audit-hdr">#</div><div class="audit-hdr">Hash</div><div class="audit-hdr">Status</div>
+      ${bad.map(b => `
+        <div>${escapeHtml(b.index)}</div>
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(b.stored_hash ? String(b.stored_hash).slice(0,20)+'…' : '—')}</div>
+        <div class="audit-fail">✗ FAIL</div>
+        <div class="audit-reason">⚠ ${escapeHtml(b.reason || 'Unknown validation failure')}</div>
+      `).join('')}</div>` : '';
+
+  // Paginate the full block list so it does not run on for hundreds of rows.
+  const totalPages = Math.max(1, Math.ceil(blocks.length / AUDIT_PAGE_SIZE));
+  AUDIT_PAGE = Math.min(Math.max(1, AUDIT_PAGE), totalPages);
+  const start = (AUDIT_PAGE - 1) * AUDIT_PAGE_SIZE;
+  const pageBlocks = blocks.slice(start, start + AUDIT_PAGE_SIZE);
+  const pagerHtml = blocks.length > AUDIT_PAGE_SIZE ? `<div class="audit-pager" style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:12px">
+      <button class="btn btn-ghost btn-sm" data-audit-page="prev"${AUDIT_PAGE <= 1 ? ' disabled' : ''}>‹ Prev</button>
+      <span style="font-size:12px;color:var(--muted)">Blocks ${start + 1}–${Math.min(start + AUDIT_PAGE_SIZE, blocks.length)} of ${blocks.length} · page ${AUDIT_PAGE}/${totalPages}</span>
+      <button class="btn btn-ghost btn-sm" data-audit-page="next"${AUDIT_PAGE >= totalPages ? ' disabled' : ''}>Next ›</button>
+    </div>` : '';
+  const tableHtml = `${pagerHtml}<div class="audit-grid" style="margin-bottom:16px">
     <div class="audit-hdr">#</div><div class="audit-hdr">Hash</div><div class="audit-hdr">Status</div>
-    ${blocks.map(b => `
+    ${pageBlocks.map(b => `
       <div>${escapeHtml(b.index)}</div>
       <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(b.stored_hash ? String(b.stored_hash).slice(0,20)+'…' : '—')}</div>
       <div class="${b.ok ? 'audit-ok' : 'audit-fail'}">${b.ok ? '✓ OK' : '✗ FAIL'}</div>
@@ -2451,8 +2795,15 @@ function renderAudit(data) {
     </div>`).join('')}` : '';
   const unreachHtml = (data.unreachable||[]).length ? `<div class="card-title" style="margin:16px 0 10px">Unreachable</div>
     ${data.unreachable.map(u=>`<div class="peer-row"><span>${escapeHtml(u.peer || 'unknown peer')}</span><span style="color:var(--red);font-size:12px">${escapeHtml(u.error || 'unreachable')}</span></div>`).join('')}` : '';
-  res.innerHTML = summaryHtml + tableHtml + conflictHtml + unreachHtml;
+  res.innerHTML = summaryHtml + faultsHtml + tableHtml + conflictHtml + unreachHtml;
 }
+
+document.getElementById('audit-results').addEventListener('click', event => {
+  const button = event.target.closest('[data-audit-page]');
+  if (!button) return;
+  AUDIT_PAGE += button.dataset.auditPage === 'prev' ? -1 : 1;
+  renderAuditView();
+});
 
 const ACTIVITY_PAGE_SIZE = 25;
 let ACTIVITY_PAGE = 1;
@@ -2534,6 +2885,38 @@ async function loadActivity(page = 1) {
   }
 }
 
+function agoLabel(seconds) {
+  if (!isFinite(seconds)) return 'never';
+  seconds = Math.max(0, Math.round(seconds));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+// A peer counts as connected only if the node has probed it successfully
+// recently (fresh last_seen, no recent failures). The node's background worker
+// probes peers every sync interval, so this reflects real reachability.
+function peerStatus(record) {
+  const seenAt = typeof record.last_seen === 'number' ? record.last_seen : null;
+  const failures = Number(record.failures || 0);
+  const age = seenAt === null ? Infinity : (Date.now() / 1000) - seenAt;
+  if (seenAt !== null && age < 90 && failures === 0) {
+    const parts = [
+      record.latency_ms != null ? `${Math.round(record.latency_ms)} ms` : null,
+      record.height != null ? `height ${record.height}` : null,
+    ].filter(Boolean);
+    return { label: 'connected', color: 'var(--green)', detail: parts.join(' · ') };
+  }
+  if (seenAt !== null) {
+    const failNote = failures ? ` · ${failures} failed check${failures > 1 ? 's' : ''}` : '';
+    return { label: 'disconnected', color: 'var(--red)', detail: `last seen ${agoLabel(age)}${failNote}` };
+  }
+  return {
+    label: 'not responding', color: 'var(--red)',
+    detail: failures ? `${failures} failed check${failures > 1 ? 's' : ''}` : 'not verified yet',
+  };
+}
+
 async function loadNodes() {
   try {
     const [nodes, stats] = await Promise.all([
@@ -2545,21 +2928,106 @@ async function loadNodes() {
     const peers = nodes.peers || [];
     document.getElementById('peer-list').innerHTML = peers.length
       ? peers.map(p => {
-          const url = typeof p === 'string' ? p : p.url;
-          return `<div class="peer-row"><span>${escapeHtml(url || 'unknown peer')}</span>
-          <span class="peer-status"><div class="dot"></div><span style="font-size:12px;color:var(--green)">connected</span></span></div>`;
+          const record = typeof p === 'string' ? { url: p } : (p || {});
+          const url = record.url || 'unknown peer';
+          const status = peerStatus(record);
+          const detail = status.detail
+            ? ` <span style="color:var(--muted);font-size:11px">(${escapeHtml(status.detail)})</span>` : '';
+          return `<div class="peer-row"><span>${escapeHtml(url)}${detail}</span>
+          <span class="peer-status"><div class="dot" style="background:${status.color}"></div><span style="font-size:12px;color:${status.color}">${status.label}</span></span></div>`;
         }).join('')
       : '<div style="font-size:13px;color:var(--muted);padding:8px 0">No peers connected yet.</div>';
     document.getElementById('chain-stats').innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
         <div><div style="color:var(--muted);font-size:12px;margin-bottom:4px">Chain length</div><div style="font-size:26px;font-weight:800">${escapeHtml(Number(stats.height) + 1)}</div></div>
-        <div><div style="color:var(--muted);font-size:12px;margin-bottom:4px">Peers</div><div style="font-size:26px;font-weight:800">${escapeHtml(peers.length)}</div></div>
+        <div><div style="color:var(--muted);font-size:12px;margin-bottom:4px">Peers (connected)</div><div style="font-size:26px;font-weight:800">${escapeHtml(peers.filter(p => peerStatus(typeof p === 'string' ? { url: p } : (p || {})).label === 'connected').length)} / ${escapeHtml(peers.length)}</div></div>
         <div><div style="color:var(--muted);font-size:12px;margin-bottom:4px">Difficulty</div><div style="font-size:26px;font-weight:800">${escapeHtml(stats.difficulty)}</div></div>
       </div>`;
   } catch (_) {
     document.getElementById('chain-stats').textContent = 'Failed to load node info.';
   }
 }
+
+// ============================================================
+// SECTION 13b — Mining pools directory
+// ============================================================
+async function loadPools() {
+  const list = document.getElementById('pool-list');
+  list.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  let pools = [];
+  try {
+    const result = await api('GET', '/pools');
+    pools = result.pools || [];
+  } catch (_) {
+    list.innerHTML = '<div class="empty">Could not load the pool directory.</div>';
+    return;
+  }
+  if (!pools.length) {
+    list.innerHTML = '<div class="empty">No pools listed yet. Be the first — list your pool above.</div>';
+    return;
+  }
+  list.innerHTML = pools.map(url => `<div class="peer-row" data-pool>
+      <div style="min-width:0;flex:1">
+        <div style="font-weight:600;overflow-wrap:anywhere">${escapeHtml(url)}</div>
+        <div class="token-address" data-pool-detail>Checking&hellip;</div>
+      </div>
+      <span class="peer-status"><div class="dot" style="background:var(--muted)"></div><span style="font-size:12px;color:var(--muted)" data-pool-status>checking&hellip;</span></span>
+    </div>`).join('');
+  const rows = list.querySelectorAll('[data-pool]');
+  pools.forEach((url, index) => enrichPool(rows[index], url));
+}
+
+// The pool servers allow cross-origin reads, so the browser fetches each pool's
+// live info directly — that also doubles as the up/down check.
+async function enrichPool(row, url) {
+  if (!row) return;
+  const statusEl = row.querySelector('[data-pool-status]');
+  const dot = row.querySelector('.dot');
+  const detailEl = row.querySelector('[data-pool-detail]');
+  const base = url.replace(/\/$/, '');
+  try {
+    const [info, stats] = await Promise.all([
+      fetch(base + '/pool/info', { signal: AbortSignal.timeout(6000) }).then(r => r.json()),
+      fetch(base + '/pool/stats', { signal: AbortSignal.timeout(6000) }).then(r => r.json()).catch(() => ({})),
+    ]);
+    const fee = info.fee_percent != null ? `${info.fee_percent}% fee` : 'fee unknown';
+    const miners = Array.isArray(stats.miners) ? stats.miners.length : 0;
+    const blocks = stats.blocks_found != null ? stats.blocks_found : (info.blocks_found ?? '—');
+    const netDiff = info.network_difficulty ?? '—';
+    dot.style.background = 'var(--green)';
+    statusEl.textContent = 'online';
+    statusEl.style.color = 'var(--green)';
+    const payoutNote = info.payouts_enabled === false ? ' &middot; <span style="color:var(--orange)">payouts off</span>' : '';
+    detailEl.innerHTML = `${escapeHtml(fee)} &middot; ${escapeHtml(String(miners))} mining now &middot; ${escapeHtml(String(blocks))} blocks found &middot; net difficulty ${escapeHtml(String(netDiff))}${payoutNote}`;
+  } catch (_) {
+    dot.style.background = 'var(--red)';
+    statusEl.textContent = 'offline';
+    statusEl.style.color = 'var(--red)';
+    detailEl.textContent = 'Not responding — the pool may be down or unreachable.';
+  }
+}
+
+document.getElementById('btn-refresh-pools').addEventListener('click', loadPools);
+document.getElementById('btn-add-pool').addEventListener('click', async () => {
+  const input = document.getElementById('pool-url');
+  const url = input.value.trim();
+  setAlert('pools-alert', '');
+  if (!/^https?:\/\//.test(url)) {
+    setAlert('pools-alert', 'Enter the full pool URL, e.g. https://your-pool.trycloudflare.com');
+    return;
+  }
+  try {
+    const result = await api('POST', '/pools/register', { url });
+    setAlert('pools-alert', result.message || 'Pool listed.', 'ok');
+    input.value = '';
+    loadPools();
+  } catch (error) {
+    setAlert('pools-alert', error.message || 'Could not list that pool.');
+  }
+});
+document.getElementById('pool-url').addEventListener('keydown', event => {
+  if (event.key === 'Enter') document.getElementById('btn-add-pool').click();
+});
 
 // ============================================================
 // SECTION 14 — Startup

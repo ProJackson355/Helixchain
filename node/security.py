@@ -78,7 +78,19 @@ class SecurityManager:
                     pass
         return str(immediate)
 
+    @staticmethod
+    def _is_loopback(ip: str) -> bool:
+        """A same-host cloudflared tunnel always arrives from loopback. That
+        address is trusted local infrastructure carrying every visitor, so it
+        must never be banned -- doing so takes the whole node offline."""
+        try:
+            return ipaddress.ip_address(ip).is_loopback
+        except ValueError:
+            return False
+
     def is_banned(self, ip: str) -> bool:
+        if self._is_loopback(ip):
+            return False
         with self._lock:
             until = self._bans.get(ip, 0)
             if until <= time.time():
@@ -92,7 +104,7 @@ class SecurityManager:
         return max(0, int(self._bans.get(ip, 0) - time.time()))
 
     def report_violation(self, ip: str, weight: int = 1) -> None:
-        if ip == "unknown":
+        if ip == "unknown" or self._is_loopback(ip):
             return
         now = time.time()
         window = int(self.config.get("violation_window_seconds", 300))
@@ -141,11 +153,19 @@ class SecurityManager:
             return "admin"
         return "default"
 
+    def admin_required(self) -> bool:
+        """Whether admin routes require a key. Optional by default so running a
+        node needs no key at all; a public node can force it on with the
+        HELIX_REQUIRE_ADMIN_API_KEY environment variable (overrides config)."""
+        override = os.getenv("HELIX_REQUIRE_ADMIN_API_KEY")
+        if override is not None:
+            return override.strip().lower() in ("1", "true", "yes", "on")
+        return bool(self.config.get("require_admin_api_key", False))
+
     def valid_api_key(self, supplied: str | None) -> bool:
-        required = bool(self.config.get("require_admin_api_key", False))
-        configured = str(os.getenv("HELIX_ADMIN_API_KEY", self.config.get("admin_api_key", "")))
-        if not required:
+        if not self.admin_required():
             return True
+        configured = str(os.getenv("HELIX_ADMIN_API_KEY", self.config.get("admin_api_key", "")))
         if not configured or not supplied:
             return False
         return hmac.compare_digest(configured, supplied)
@@ -157,7 +177,7 @@ class SecurityManager:
         return {
             "active_bans": active,
             "max_request_body_bytes": self.max_body_bytes,
-            "admin_api_key_required": bool(self.config.get("require_admin_api_key", False)),
+            "admin_api_key_required": self.admin_required(),
             "tls_enabled": bool(self.config.get("tls", {}).get("enabled", False)),
         }
 

@@ -44,6 +44,8 @@
     "new_target_block_time_seconds": 160,
     "new_target_block_time_activation_height": 161,
     "difficulty_activation_height": 10,
+    "fine_difficulty_activation_height": 835,
+    "fine_target_block_time_seconds": 120,
     "token_metadata_activation_height": 41,
     "token_exchange_activation_height": 41,
     "token_swap_activation_height": 200,
@@ -68,7 +70,7 @@
     "violation_window_seconds": 300,
     "ban_duration_seconds": 900,
     "trust_loopback_proxy_headers": true,
-    "require_admin_api_key": true,
+    "require_admin_api_key": false,
     "admin_api_key": "",
     "admin_paths": [
       "/mine",

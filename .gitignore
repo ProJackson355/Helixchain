@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Helix — Git ignore rules
+# Keeps source, config.json, web/, and the download packages tracked, while
+# excluding virtual environments, caches, and per-node runtime state.
+# ---------------------------------------------------------------------------
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# IDEs / editors
+.idea/
+.vscode/
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Cloudflare / Wrangler build cache and local secrets
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Per-node runtime state (generated at run time, not source)
+database_*.json
+database_*.json.*
+node_*.json
+peers.json
+pools.json
+security_state.json
+backups/
+*.tmp
+
+# Wallet stores — sensitive, never commit
+wallets.json
+**/wallets.json
+wallets.json.bak
+
+# Logs
+*.log
+
+# Note: web/downloads/*.zip (the node/miner packages) are intentionally NOT
+# ignored, because the site links to them and the tests check they exist.
+# If you would rather build them on release instead of committing binaries,
+# uncomment the next line:
+# web/downloads/*.zip

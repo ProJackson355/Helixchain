@@ -266,7 +266,7 @@
     .token-tab:hover, .token-tab.active { color:var(--text); border-color:var(--accent); background:#1d2340; }
     .token-pane { display:none; }
     .token-pane.active { display:block; }
-    .token-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+    .token-list { display:grid; grid-template-columns:1fr; gap:10px; }
     #token-discovery-list.token-list { grid-template-columns:1fr; gap:8px; }
     .token-card {
       background:var(--surface2); border:1px solid var(--border); border-radius:10px;
@@ -297,6 +297,13 @@
     .price-chart-controls { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
     .chart-size-control { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
     .chart-size-control input[type=range] { width:120px; min-height:32px; padding:0; accent-color:var(--accent); }
+    .price-chart-ranges { display:flex; align-items:center; gap:4px; margin-right:auto; }
+    .chart-range-btn { background:var(--card); color:var(--muted); border:1px solid var(--border); border-radius:7px; padding:5px 10px; font-size:11px; font-weight:600; cursor:pointer; min-height:32px; }
+    .chart-range-btn:hover { color:var(--text); border-color:var(--accent); }
+    .chart-range-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .chart-start-control { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
+    .chart-start-control input[type=datetime-local] { min-height:32px; padding:3px 6px; font-size:11px; color:var(--text); background:var(--card); border:1px solid var(--border); border-radius:7px; accent-color:var(--accent); }
+    @media (max-width:640px) { .price-chart-ranges { width:100%; margin-right:0; flex-wrap:wrap; } .chart-start-control { width:100%; } .chart-start-control input[type=range] { flex:1; width:auto; } }
     .chart-resize-handle {
       display:flex; align-items:center; justify-content:center; height:18px; margin-top:5px;
       color:var(--muted); cursor:nwse-resize; touch-action:none; font-size:17px; letter-spacing:3px;
@@ -395,6 +402,11 @@
       #hdr-sync-pill.visible { max-width:130px; overflow:hidden; }
       main { padding:18px 12px; }
       .card { padding:18px; }
+      /* Let long button labels wrap within the button instead of overflowing. */
+      .btn { white-space:normal; padding-left:16px; padding-right:16px; line-height:1.2; }
+      .btn-sm { padding:7px 12px; }
+      .addr-row { flex-wrap:wrap; }
+      .addr-row .btn, .addr-row .copy-btn { flex:1 1 auto; }
       .token-list { grid-template-columns:1fr; }
       .token-card { grid-template-columns:auto minmax(0,1fr); }
       .token-card .token-balance { grid-column:2; margin-top:0; font-size:17px; }
@@ -410,7 +422,7 @@
       .docs-downloads { width:100%; }
       .docs-downloads .btn { flex:1; }
       .docs-grid { grid-template-columns:1fr; }
-      #panel-nodes > .nodes-grid { grid-template-columns:minmax(0,1fr); gap:0; }
+      #panel-nodes > .nodes-grid { grid-template-columns:minmax(0,1fr) !important; gap:0 !important; }
       #panel-nodes .peer-add-row { flex-direction:column; }
       #panel-nodes .peer-add-row .btn { width:100%; min-height:43px; }
       #panel-nodes .peer-row { align-items:flex-start; flex-direction:column; gap:8px; overflow-wrap:anywhere; }
@@ -478,6 +490,7 @@
     <button class="nav-btn" data-panel="history">History</button>
     <button class="nav-btn" data-panel="activity">Activity</button>
     <button class="nav-btn" data-panel="nodes">Nodes</button>
+    <button class="nav-btn" data-panel="pools">Pools</button>
     <button class="nav-btn" data-panel="docs">Docs</button>
     <button type="button" class="btn btn-danger mobile-nav-lock" id="btn-mobile-logout">Lock wallet</button>
   </nav>
@@ -595,6 +608,21 @@
           <input id="recover-pass2" type="password" placeholder="Repeat password" autocomplete="new-password" />
         </div>
         <button class="btn btn-primary btn-full mt8" id="btn-recover">Recover Wallet</button>
+
+        <div style="border-top:1px solid var(--border);margin-top:22px;padding-top:18px">
+          <div class="card-title" style="font-size:15px">Restore from Backup File</div>
+          <div id="restore-alert"></div>
+          <p style="font-size:13px;color:var(--muted);margin:6px 0 14px">Have a wallet backup file you downloaded earlier? Load it back in here, then unlock it with the password you used when you created the wallet.</p>
+          <div class="field">
+            <label>Wallet name (optional — defaults to the backup's name)</label>
+            <input id="restore-name" type="text" placeholder="my-wallet" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Backup file (.json)</label>
+            <input id="restore-file" type="file" accept="application/json,.json" />
+          </div>
+          <button class="btn btn-primary btn-full mt8" id="btn-restore-file">Restore Wallet from File</button>
+        </div>
       </div>
     </div>
   </div>
@@ -604,12 +632,15 @@
 <div id="panel-dashboard" class="panel">
   <div class="card">
     <div class="sync-row">
-      <div class="card-title" style="margin-bottom:0">Balance</div>
+      <div class="card-title" style="margin-bottom:0">Total Value</div>
       <div class="node-pill"><div class="dot" id="sync-dot"></div><span id="sync-label">Synced</span></div>
     </div>
     <div style="margin:14px 0 4px">
       <span class="balance-big" id="dash-balance">—</span>
       <span class="balance-unit">HLX</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
+      Total value of your wallet, priced in HLX (HLX is the stable unit of account). Your actual HLX holdings appear in the list below.
     </div>
     <div style="font-size:13px;color:var(--muted);margin-bottom:18px">
       <span id="dash-pending-count">—</span> transactions pending on the network
@@ -635,9 +666,15 @@
     <div id="dash-token-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
   </div>
   <div class="card">
+    <div class="card-title">Backup &amp; Restore</div>
+    <div id="backup-alert"></div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Download an encrypted backup file of this wallet. It stays protected by your password and holds the keys that control your on-chain assets, so you can restore access on any device. Keep it somewhere safe.</p>
+    <button class="btn btn-primary" id="btn-export-wallet" type="button">⬇ Download Wallet Backup</button>
+  </div>
+  <div class="card">
     <div class="card-title">Wallet Security</div>
     <div id="delete-wallet-alert"></div>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Delete this wallet's encrypted local record from this browser. Blockchain funds are not deleted and can only be accessed again with the seed phrase.</p>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Delete this wallet's encrypted local record from this browser. Blockchain funds are not deleted and can only be accessed again with the seed phrase or a backup file.</p>
     <button class="btn btn-danger" id="btn-delete-wallet" type="button">Delete This Wallet</button>
   </div>
 </div>
@@ -684,6 +721,7 @@
   <div class="token-tabs" role="tablist" aria-label="Token sections">
     <button class="token-tab active" type="button" data-token-pane="wallet">My Tokens</button>
     <button class="token-tab" type="button" data-token-pane="discover">Discover</button>
+    <button class="token-tab" type="button" data-token-pane="swap">Swap</button>
     <button class="token-tab" type="button" data-token-pane="manage">Management</button>
     <button class="token-tab" type="button" data-token-pane="create">Create Token</button>
   </div>
@@ -714,6 +752,22 @@
     </div>
   </div>
 
+  <div id="token-pane-swap" class="token-pane">
+      <div class="card" style="max-width:620px">
+        <div class="card-title">Swap Tokens</div>
+        <div id="swap-alert"></div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Atomically swap one token for another, routed through both tokens' HLX pools. The quote already includes both 0.3% pool fees, and a 1% slippage guard is applied to protect the trade.</p>
+        <div id="swap-empty" class="empty" hidden>You need a confirmed balance in a token that has an active HLX pool to swap.</div>
+        <div id="swap-body">
+          <div class="field"><label>From (a token you hold)</label><select id="swap-source"></select></div>
+          <div class="field"><label>Amount</label><input id="swap-amount" inputmode="decimal" placeholder="0" /></div>
+          <div class="field"><label>To (receive)</label><select id="swap-target"></select></div>
+          <div id="swap-quote" class="token-address">Enter an amount for a routed quote.</div>
+          <button class="btn btn-primary btn-full mt8" id="btn-swap-tokens">Swap</button>
+        </div>
+      </div>
+  </div>
+
   <div id="token-pane-create" class="token-pane">
       <div class="card" style="max-width:620px">
         <div class="card-title">Create a Token</div>
@@ -737,10 +791,12 @@
         <div id="token-selected-info" class="empty">Select a confirmed token.</div>
         <div class="field"><label>Recipient address</label><input id="token-recipient" maxlength="40" placeholder="40-character address" /></div>
         <div class="field"><label>Amount</label><input id="token-amount" inputmode="decimal" placeholder="0" /></div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-primary" style="flex:1" id="btn-token-transfer">Transfer</button>
           <button class="btn btn-success" style="flex:1" id="btn-token-mint">Mint</button>
+          <button class="btn btn-danger" style="flex:1" id="btn-token-burn">Burn</button>
         </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:6px" id="token-burn-note" hidden>Burn permanently destroys tokens from your DAD balance, lowering the total minted supply. It uses the Amount field above.</p>
         <div id="token-authority-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
           <div class="field"><label>New DAD authority address</label><input id="token-new-dad" maxlength="40" placeholder="40-character address" /></div>
           <div style="display:flex;gap:8px">
@@ -791,6 +847,29 @@
   </div>
 </div>
 
+<!-- POOLS -->
+<div id="panel-pools" class="panel">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <div class="card-title" style="margin-bottom:0">Mining Pools</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-pools">↻ Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">A shared directory of Helix mining pools. Listing a pool here shares it with every node on the network. Each pool's fee, active miners, and status are read live from the pool. Join one from the Helix Miner app by choosing Pool mode and pasting the pool URL.</p>
+    <div id="pools-alert"></div>
+    <div class="field" style="margin-bottom:0">
+      <label>List a pool (its public URL, e.g. https://your-pool.trycloudflare.com)</label>
+      <div class="addr-row">
+        <input id="pool-url" type="text" placeholder="https://…" autocomplete="off" style="flex:1" />
+        <button class="btn btn-primary" id="btn-add-pool" type="button">List Pool</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Available Pools</div>
+    <div id="pool-list"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+
 <!-- DOCS -->
 <div id="panel-docs" class="panel">
   <div class="card docs-hero">
@@ -813,42 +892,49 @@
         <li>Use <strong>Send</strong> to choose HLX or a held custom token, enter the recipient address and amount, then submit the signed transaction.</li>
         <li>A submitted transaction stays pending until a miner confirms it. Its sender may cancel it from Send while it is still pending.</li>
         <li><strong>History</strong> shows this wallet's transactions. <strong>Activity</strong> shows confirmed transactions from every wallet, newest first.</li>
+        <li><strong>Backup &amp; Restore:</strong> from the Dashboard you can download an encrypted backup file of your wallet, and restore it later from the <strong>Recover</strong> screen. Your seed phrase or a backup file is the only way to regain access on another device or browser.</li>
       </ol>
-      <div class="alert alert-warn">Never share a recovery phrase, private key, wallet password, or node admin API key.</div>
+      <div class="alert alert-warn">Never share a recovery phrase, private key, wallet password, wallet backup file, or node admin API key.</div>
     </section>
 
     <section class="card docs-section">
       <div class="card-title">Tokens and markets</div>
       <ol>
+        <li>The <strong>Dashboard</strong> shows your total wallet value priced in HLX (your HLX plus every held token converted through its pool price), since HLX is the stable unit of account. Token lists — on the Dashboard, in <strong>My Tokens</strong>, and in <strong>Discover</strong> — show one asset per line, and the HLX row shows exactly how much HLX you hold.</li>
         <li>Open <strong>Tokens &gt; Create Token</strong> and provide an HTTPS metadata JSON URL with name, symbol, description, and image fields.</li>
-        <li>The MNT address identifies the token. The DAD address is the authority allowed to mint more supply, transfer authority, or revoke it permanently.</li>
-        <li>After creation is mined, mint supply from Management. Tokens become visible from confirmed blockchain state.</li>
-        <li>Discover shows HLX and every confirmed token. A DAD can create a market by locking HLX and its entire confirmed token balance; users can then buy, sell, or atomically swap between tokens with active pools.</li>
-        <li>OHLC candlestick charts use real timestamps and begin at the left edge of the selected view. Choose 1m, 1H, 1D, or 1M; drag to pan, use the wheel or +/− buttons to zoom, and adjust both width and height. Rising candles are green and falling candles are red.</li>
+        <li>The MNT address identifies the token. The DAD address is the authority allowed to mint more supply, burn supply, transfer authority, or revoke it permanently.</li>
+        <li>After creation is mined, use <strong>Management</strong> to mint supply, transfer, or <strong>Burn</strong>. Only the DAD authority can mint or burn; burning permanently destroys tokens from the DAD's balance and lowers the total minted supply.</li>
+        <li><strong>Discover</strong> lists HLX and every confirmed token. A DAD can create a market by locking HLX plus its entire confirmed token balance; anyone can then buy or sell through the pool.</li>
+        <li>The dedicated <strong>Swap</strong> tab atomically trades one token for another, routed through both tokens' HLX pools. Quotes include both 0.3% pool fees, and a 1% slippage guard protects each trade.</li>
+        <li>Token price uses OHLC candlesticks. Choose the candle interval — <strong>Minute, Hour, Day, Month, or Auto</strong> — and set exactly when the chart starts with the <strong>Start</strong> date-and-time picker. Cropping the start rescales the vertical axis so small values stay readable next to large ones. Drag to pan, scroll to zoom, drag the corner to resize, and double-click to reset. Rising candles are green and falling candles are red.</li>
       </ol>
     </section>
 
     <section class="card docs-section">
       <div class="card-title">Run a full node</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px"><strong>Easiest:</strong> install Python 3.11+, extract <code>helix-node.zip</code>, and double-click <strong><code>setup.bat</code></strong> (Windows) to open the installer — a small window where you fill in the settings (most are optional), and it creates the environment, checks and installs any missing libraries, and starts the node for you. Prefer no menu? Double-click <strong><code>start-node.bat</code></strong> (Windows) or run <code>bash start-node.sh</code> (Linux/macOS) to do the same from the command line.</p>
+      <div style="font-weight:600;margin:6px 0 6px">Manual setup</div>
       <ol>
-        <li>Install Python 3.11 or newer and extract <code>helix-node.zip</code>.</li>
-        <li>Open a terminal in the extracted folder and run <code>python -m venv .venv</code>.</li>
-        <li>Install dependencies with <code>.venv\Scripts\python.exe -m pip install -r requirements.txt</code> on Windows, or <code>.venv/bin/python -m pip install -r requirements.txt</code> on Linux/macOS.</li>
-        <li>Set a persistent, private <code>HELIX_ADMIN_API_KEY</code>, then start with <code>.venv\Scripts\python.exe run_node.py</code>. Do not generate a new key on every launch.</li>
-        <li>Open <code>http://127.0.0.1:8000/health</code>. Add synchronized Helix peers in the Nodes tab or in <code>config.json</code>.</li>
+        <li>Install Python 3.11+ and extract <code>helix-node.zip</code>.</li>
+        <li>Create a virtual environment. Windows: <code>python -m venv .venv</code> then <code>.venv\Scripts\activate.bat</code>. Linux/macOS: <code>python3 -m venv .venv</code> then <code>source .venv/bin/activate</code>.</li>
+        <li>Install dependencies: <code>pip install -r requirements.txt</code>.</li>
+        <li>Start the node: <code>python run_node.py</code>.</li>
+        <li>Confirm <code>http://127.0.0.1:8000/health</code> returns node JSON. That address also serves this wallet UI locally — so you do <em>not</em> need to host a website to use your node. Add peers from the Nodes tab or <code>config.json</code>.</li>
       </ol>
-      <p>Other nodes may use different admin keys. The key protects local administrative endpoints and is not part of consensus or shared chain data.</p>
+      <div class="alert alert-info">An admin API key is <strong>optional</strong> — running a node needs no key. It only protects administrative endpoints (mine, sync, discovery) and is not part of consensus, so nodes with different keys (or no key) still share chain data. For a public node you can turn it on by setting <code>HELIX_ADMIN_API_KEY</code> and <code>HELIX_REQUIRE_ADMIN_API_KEY=true</code>; a node and the Pages site in front of it must then share the same key.</div>
     </section>
 
     <section class="card docs-section">
       <div class="card-title">Expose and connect a node</div>
       <ol>
-        <li>For temporary testing, run <code>cloudflared tunnel --url http://127.0.0.1:8000</code>. No port forwarding or personal domain is required.</li>
-        <li>Confirm <code>https://YOUR-URL.trycloudflare.com/health</code> returns healthy node JSON, then email the TryCloudflare URL to <a href="mailto:jackson.tripp100@gmail.com">jackson.tripp100@gmail.com</a> so it can be considered for the Helix node list.</li>
-        <li>Put the resulting HTTPS URL in the Pages <code>HELIX_NODE_URL</code> variable. Multiple nodes use a JSON array such as <code>[&quot;https://node1.example&quot;,&quot;https://node2.example&quot;]</code>.</li>
-        <li>Redeploy Pages after changing variables. TryCloudflare URLs expire when the tunnel stops, so replace them when necessary.</li>
-        <li>For a permanent public node, use a named tunnel, TLS, firewall rules, backups, rate limits, and trusted peers.</li>
+        <li>With the node running, start a tunnel: <code>cloudflared tunnel --url http://localhost:8000</code>. A quick tunnel needs no domain, but its <code>https://xxxx.trycloudflare.com</code> address changes every time it restarts.</li>
+        <li>Verify the tunnel: open <code>https://YOUR-URL.trycloudflare.com/health</code> and confirm it returns node JSON. Optionally, email a working tunnel URL to <a href="mailto:jackson.tripp100@gmail.com">jackson.tripp100@gmail.com</a> to have it considered for the shared Helix node list.</li>
+        <li>Hosting this website is <strong>optional</strong> — the node already serves the wallet locally. To put it online: in Cloudflare Pages &rarr; your project &rarr; <strong>Settings &rarr; Variables and secrets</strong> (Production scope), set <code>HELIX_NODE_URL</code> = the current tunnel URL (no trailing slash, no <code>/api</code>; multiple nodes use a JSON array for automatic failover). Only if your node <em>requires</em> an admin key, also set <code>HELIX_ADMIN_API_KEY</code> to the same value (choose Encrypt) and <code>HELIX_ENABLE_ADMIN_API</code> = <code>true</code> to allow admin actions through the site.</li>
+        <li><strong>Deploy to the production branch.</strong> Pages bakes variables into a deployment, and a deploy tagged with a non-production branch only creates a preview (<code>&lt;branch&gt;.helixwallet.pages.dev</code>) — the live site will not change. Deploy with the production branch named explicitly: <code>wrangler pages deploy web --project-name=helixwallet --branch=main</code>. Use whatever <strong>Settings &rarr; Builds &amp; deployments &rarr; Production branch</strong> shows for <code>--branch</code>.</li>
+        <li>Open <code>https://helixwallet.pages.dev/api/health</code>. It should return the same node JSON, and the wallet will connect on reload.</li>
       </ol>
+      <div class="alert alert-warn">Quick-tunnel URLs rotate and Pages snapshots variables at deploy time, so after every tunnel restart you must update <code>HELIX_NODE_URL</code> <em>and</em> redeploy to production. If <code>/api/*</code> returns Cloudflare <strong>Error 1016</strong>, the live production deployment is still pointing at an old, dead tunnel — update the variable and redeploy to the production branch.</div>
+      <div class="alert alert-info">For a stable setup, use a <strong>named Cloudflare Tunnel</strong> on a domain in your Cloudflare account: it gives a fixed hostname the Worker can always reach and removes the per-restart update. For a permanent public node, also add TLS, firewall rules, backups, rate limits, and trusted peers.</div>
     </section>
 
     <section class="card docs-section">
@@ -872,13 +958,34 @@
     </section>
 
     <section class="card docs-section">
+      <div class="card-title">Mining pools</div>
+      <p>A pool lets several miners combine hashrate and share block rewards, so payouts arrive more steadily than solo mining. Anyone can host one, and the wallet's <strong>Pools</strong> tab is a shared directory — list your pool there and it propagates to every node, showing each pool's fee, active miners, and online status. The pool operator keeps the fee (<code>HELIX_POOL_FEE_PERCENT</code>) from each block; note payouts are whole HLX, so a 1% fee on a 10 HLX reward rounds to 0 — raise the percentage for a reliable cut.</p>
+      <div class="card-title" style="margin:14px 0 8px">Host a pool</div>
+      <ol>
+        <li>Set the pool's payout wallet as an environment variable — its 12-word seed: Windows <code>set HELIX_POOL_SEED=word word ... word</code>, Linux/macOS <code>export HELIX_POOL_SEED="word word ... word"</code>. This wallet receives block rewards and sends the split to miners, so keep it funded for fees and back it up.</li>
+        <li>Point the pool at a reachable node with <code>HELIX_POOL_NODE</code> (default <code>http://127.0.0.1:8000</code>). Optionally set <code>HELIX_POOL_FEE_PERCENT</code> (default 1), <code>HELIX_POOL_SHARE_SUBTRACT</code> (share difficulty = network difficulty minus this, default 2), and <code>HELIX_POOL_PORT</code> (default 8100).</li>
+        <li>Start it: <code>python run_pool.py</code>. Confirm <code>http://127.0.0.1:8100/pool/info</code> returns the pool address and difficulty.</li>
+        <li>Expose the pool the same way as a node — a <code>cloudflared</code> tunnel or public host — and share that URL with miners. <code>/pool/stats</code> shows live shares, each miner's estimated hashrate, and recent payouts.</li>
+      </ol>
+      <div class="card-title" style="margin:14px 0 8px">Join a pool</div>
+      <ol>
+        <li>Open Helix Miner and set <strong>Mining mode</strong> to <strong>Pool</strong>.</li>
+        <li>Enter the <strong>Pool URL</strong> and your 40-character reward address, choose CPU or NVIDIA, and Start.</li>
+        <li>You mine at the pool's reduced share difficulty and submit shares continuously. When any member solves a block, the reward is split <strong>proportionally to the shares each miner contributed</strong> (minus the pool fee) and paid automatically to your address — more hashrate means more shares means a larger payout. Payouts are on-chain transactions and confirm once a block is mined.</li>
+      </ol>
+      <div class="alert alert-info">The pool's admin/payout wallet is only on the host's machine. Miners never share keys — they only submit shares and receive payouts to their own address.</div>
+    </section>
+
+    <section class="card docs-section">
       <div class="card-title">Network rules and maintenance</div>
       <ul>
         <li>Reward schedule: 10 HLX for blocks 0-89, 2 HLX for blocks 90-299, and 10 HLX from block 300 onward.</li>
         <li>Historical difficulty rules remain valid through block 160. Difficulty resets to 3 at block 161, stays at 3 through block 170, and can adjust again beginning at block 171.</li>
         <li>From block 161 onward, the target average is 160 seconds. A completed 10-block window below 80 seconds raises difficulty by one; a window above 160 seconds lowers it by one.</li>
+        <li>Fine-grained difficulty: once the configured <code>fine_difficulty_activation_height</code> is reached, proof of work uses a Bitcoin-style numeric target (valid when <code>int(hash, 16) &le; target</code>) that retargets smoothly by the ratio of actual to expected block time — bounded to a 4x move per window — instead of jumping a whole 16x level at a time. Below that height the leading-zero rule is preserved exactly, so existing blocks stay valid. Miners and pools read the exact <code>target</code> from <code>/mining/work</code>. Set the activation height above the current chain tip and upgrade every node before it.</li>
         <li>Maximum native supply: 20,000,000 HLX.</li>
-        <li>All nodes must upgrade to protocol 10 and restart before mining or accepting block 200, when atomic token swaps activate.</li>
+        <li>Atomic token swaps activated at block 200 (protocol 10). Token-to-token trades route through both HLX pools.</li>
+        <li>The DAD token-burn feature requires every node to run the updated build; nodes on older code reject <code>token_burn</code> transactions, so upgrade all nodes together before relying on it.</li>
         <li>At block 300, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> becomes the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
         <li>Before upgrading or copying chain data, stop the node and back up its database.</li>
         <li>Use <code>python helixctl.py validate</code> to verify the local chain.</li>

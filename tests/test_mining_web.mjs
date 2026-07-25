@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 
-const html = await fs.readFile(new URL("../web_old/index.html", import.meta.url), "utf8");
-const script = await fs.readFile(new URL("../web_old/app.js", import.meta.url), "utf8");
+const html = await fs.readFile(new URL("../web/index.html", import.meta.url), "utf8");
+const script = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8");
 
 assert.match(html, /<script src="\/app\.js" defer><\/script>/);
 assert.doesNotMatch(html, /data-panel="mine"|id="panel-mine"|id="btn-mine"/);

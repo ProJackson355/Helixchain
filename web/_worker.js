@@ -10,8 +10,10 @@ const PUBLIC_ROUTES = [
   ["GET", /^\/transactions\/recent$/],
   ["GET", /^\/transaction\/[0-9a-f]{64}$/],
   ["GET", /^\/nodes\/audit\/cached$/],
+  ["GET", /^\/pools$/],
   ["POST", /^\/transaction$/],
   ["POST", /^\/transaction\/[0-9a-f]{64}\/cancel$/],
+  ["POST", /^\/pools\/register$/],
 ];
 
 const ADMIN_ROUTES = [

@@ -6,6 +6,18 @@ Helix is an educational proof-of-work cryptocurrency project with encrypted wall
 
 ## Updates
 
+### 2026-07-24
+
+- **Bitcoin-style fine-grained difficulty.** Proof of work can use a numeric target (a block is valid when `int(hash, 16) <= target`) that retargets smoothly every 10 blocks toward a 2-minute average — no upper cap (floored at `min_difficulty`), bounded to a 4x move per window. It is gated by `blockchain.fine_difficulty_activation_height` so existing chains stay valid; below that height the classic leading-zero rule is byte-for-byte unchanged.
+- **Mining pools.** New `pool_server.py` / `run_pool.py` let anyone host a pool that pays miners proportionally to the shares (hashrate) they contribute, minus a configurable fee. Helix Miner gained a **Pool** mode, and the wallet has a shared **Pools** directory tab that lists pools (fee, active miners, online status) and gossips them across nodes.
+- **DAD token burn.** A new `token_burn` transaction lets the DAD authority destroy tokens from its balance and lower the total minted supply.
+- **Dedicated Swap tab**, a **total wallet value** (priced in HLX) at the top of the Dashboard, and token lists that show one asset per line.
+- **Encrypted wallet backup/restore** to and from a file, from the Dashboard and the Recover screen.
+- **Peer and pool gossip** so a peer or pool added on one node propagates network-wide; the Nodes tab shows real connected/disconnected status from live probes.
+- **Optional admin API key.** Running a node no longer requires a key or hosting a website; set `HELIX_REQUIRE_ADMIN_API_KEY=true` (plus `HELIX_ADMIN_API_KEY`) only to lock down a public node.
+- **One-click setup.** `setup.bat` opens a small GUI installer (`install_node.py`); `start-node.bat` / `start-node.sh` do the same from the command line and skip installing libraries that are already present.
+- Chart candle interval options (Minute / Hour / Day / Month / Auto) and a date-and-time chart-start picker.
+
 ### 2026-07-23
 
 - Added a dedicated, numbered Activity view for all confirmed blockchain transactions across every wallet, newest first, with full clickable details.
@@ -45,20 +57,31 @@ pip install -e .
 ```
 
 ## Run a node
-(I actually have no idea if other people can even run a node outside of my local network. In future updates I plan ato buy a domain and use that for the nodes instead of cloudflare for easier peer discovery)  
+
+Anyone can run a node — no admin key and no website required. A node serves the
+browser wallet locally at `http://127.0.0.1:8000/`, so hosting the Cloudflare
+Pages site is optional. To join others, add their node as a peer (or a
+`bootstrap_node` in `config.json`); peer and pool lists then gossip across the
+network automatically.
 
 Download the node software here: [Releases](https://github.com/ProJackson355/Helixchain/releases)
-```bash
-helix-node
-```
 
-Or without installing console commands:
+**Easiest (Windows):** extract the zip and double-click **`setup.bat`** to open a
+small installer window — fill in the settings (most are optional), and it creates
+the environment, installs any missing libraries, and starts the node. Or
+double-click **`start-node.bat`**. On Linux/macOS run `bash start-node.sh`
+(add `--gui` for the installer).
+
+**Manual:**
 
 ```bash
 python run_node.py
 ```
 
-The default API listens on port `8000`. Edit `config.json` or set environment variables such as `NODE_PORT`, `HELIX_DATABASE`, and `HELIX_CONFIG`.
+The default API listens on port `8000`. Edit `config.json` or set environment
+variables such as `NODE_PORT`, `HELIX_DATABASE`, and `HELIX_CONFIG`. An admin key
+is optional; set `HELIX_ADMIN_API_KEY` and `HELIX_REQUIRE_ADMIN_API_KEY=true`
+only to protect a public node's admin endpoints.
 
 Health check:
 
@@ -129,6 +152,34 @@ every 10 blocks: it rises when the window average is below 80 seconds and falls
 when the average is above 160 seconds. The target is probabilistic, so an
 individual block can take more or less than 160 seconds.
 
+## Mining pools
+
+A pool combines several miners' hashrate and shares block rewards, so payouts
+arrive more steadily than solo mining. Anyone can host one.
+
+**Host a pool:**
+
+```bash
+# set the pool's payout wallet (its 12-word seed) and point it at a node
+set HELIX_POOL_SEED=word word word ... word         # Windows (export on Linux/macOS)
+set HELIX_POOL_NODE=http://127.0.0.1:8000
+python run_pool.py                                   # serves on port 8100
+```
+
+Optional: `HELIX_POOL_FEE_PERCENT` (default 1), `HELIX_POOL_SHARE_SUBTRACT`
+(share difficulty = network difficulty minus this, default 2), `HELIX_POOL_PORT`
+(default 8100). Expose port 8100 with its own tunnel and share that URL with
+miners. Block templates are addressed to the pool wallet; when a member solves a
+block the reward is split proportionally to each miner's shares and paid out
+on-chain, with the fee kept by the operator. Payouts are whole HLX, so a 1% fee
+on a 10 HLX reward rounds to 0 — raise the percentage for a reliable cut.
+`GET /pool/info` and `GET /pool/stats` expose live pool data.
+
+**Join a pool:** in Helix Miner, set **Mining mode** to **Pool**, paste the pool
+URL and your reward address, and start. You mine at a reduced share difficulty
+and submit shares continuously. The wallet's **Pools** tab is a shared directory
+of pools (fee, active miners, online status) that propagates across nodes.
+
 ## Wallet CLI
 
 ```bash
@@ -177,7 +228,7 @@ intermediate HLX during the transaction.
 Pool liquidity is reported as the amount of HLX currently locked in the pool;
 the token reserve remains part of the constant-product price calculation.
 
-Token API routes include `GET /tokens`, `GET /token/{mint_address}`, `GET /dad/{dad_address}/tokens`, balance and history lookups, plus the existing signed `POST /transaction` endpoint for `token_create`, `token_mint`, `token_transfer`, `token_set_authority`, `token_pool_create`, `token_pool_add_hlx`, `token_buy`, `token_sell`, and `token_swap` operations. `GET /transactions/recent` supplies the paginated, clickable, network-wide Activity feed.
+Token API routes include `GET /tokens`, `GET /token/{mint_address}`, `GET /dad/{dad_address}/tokens`, balance and history lookups, plus the existing signed `POST /transaction` endpoint for `token_create`, `token_mint`, `token_burn`, `token_transfer`, `token_set_authority`, `token_pool_create`, `token_pool_add_hlx`, `token_buy`, `token_sell`, and `token_swap` operations. `GET /transactions/recent` supplies the paginated, clickable, network-wide Activity feed.
 
 An unconfirmed transaction can be removed with the signed
 `POST /transaction/{tx_id}/cancel` endpoint. The sender's secp256k1 proof is
@@ -217,25 +268,40 @@ visitors receive separate rate-limit buckets. Forwarded client headers from
 non-loopback clients are ignored. Restart the node after changing this setting;
 temporary bans are persisted in `security_state.json`.
 
-`config.json` contains node, network, blockchain, mempool, wallet, security, and performance settings. Before exposing a node publicly:
+`config.json` contains node, network, blockchain, mempool, wallet, security, and performance settings. The admin API key is **optional by default** (`require_admin_api_key: false`), so a plain node needs no key. Before exposing a node publicly:
 
 - Enable TLS.
-- Keep the administrative API key enabled (it is required by default).
-- Set a long random key through `HELIX_ADMIN_API_KEY` before starting the node.
-- Set the exact same value as the encrypted `HELIX_ADMIN_API_KEY` secret in
-  Cloudflare Pages. Never put the key inside the `web` folder.
+- Turn the admin key on: set `HELIX_REQUIRE_ADMIN_API_KEY=true` and a long random
+  `HELIX_ADMIN_API_KEY` before starting the node.
+- If you host the Pages wallet in front of it, set the exact same value as the
+  encrypted `HELIX_ADMIN_API_KEY` secret in Cloudflare Pages. Never put the key
+  inside the `web` folder.
 - Configure a public URL and trusted bootstrap nodes.
 - Back up wallet and database files.
 
 ## Project layout
 
 ```text
-node/           blockchain, P2P networking, consensus, security
-wallet/         wallet implementation and CLI
-web/            browser wallet and Cloudflare Pages deployment package
-config.json     runtime settings
-run_node.py     node launcher
-helixctl.py     local maintenance utility
+node/             blockchain, P2P networking, consensus, security, pool registry
+wallet/           wallet implementation and CLI
+web/              browser wallet and Cloudflare Pages deployment package
+config.json       runtime settings
+run_node.py       node launcher
+run_pool.py       mining-pool launcher
+pool_server.py    mining-pool coordinator (shares, payouts, stats)
+helix_miner.py    desktop miner (CPU/NVIDIA, solo/pool)
+miner_cuda.py     optional NVIDIA CUDA backend
+install_node.py   GUI node installer (setup.bat)
+start-node.bat    one-click node setup/launch (Windows)
+start-node.sh     one-click node setup/launch (Linux/macOS)
+helixctl.py       local maintenance utility
 ```
 
 See `web/README.md` to deploy the browser wallet to Cloudflare Pages.
+
+## License
+
+Released under the [MIT License](LICENSE) — free to use, modify, and distribute,
+provided the copyright notice is kept. The software is provided "as is" without
+warranty; Helix is an educational project and has not been audited, so do not
+use it to protect real money.

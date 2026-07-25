@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const html = fs.readFileSync(new URL('../web_old/index.html', import.meta.url), 'utf8');
-const script = fs.readFileSync(new URL('../web_old/app.js', import.meta.url), 'utf8');
+const html = fs.readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
+const script = fs.readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
 
 assert.match(html, /id="tx-modal"/);
 assert.match(script, /async function openTransactionDetails\(txId\)/);

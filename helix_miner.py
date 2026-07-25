@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -88,6 +89,32 @@ def block_hash(block: dict, nonce: int | None = None) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def work_target(work: dict) -> int:
+    """Numeric proof-of-work target from a node or pool work payload.
+
+    Prefers the exact `target`/`share_target` hex; falls back to the legacy
+    leading-zero difficulty (target == 16**(64-difficulty) - 1) for older nodes.
+    """
+    raw = work.get("target") or work.get("share_target")
+    if raw:
+        return int(raw, 16)
+    difficulty = int(work.get("share_difficulty", work.get("difficulty", 1)))
+    return 16 ** (64 - difficulty) - 1
+
+
+def target_difficulty(target: int) -> float:
+    """Effective difficulty implied by a numeric target, in hex-zero units.
+
+    difficulty == 64 - log16(target + 1). A whole leading-zero level gives an
+    integer; fine-grained targets give the true fractional difficulty (which can
+    exceed the node's displayed integer once fine mode is active).
+    """
+    target = int(target)
+    if target < 0:
+        return 64.0
+    return round(64 - math.log(target + 1, 16), 2)
+
+
 def find_solution(
     block: dict,
     difficulty: int,
@@ -111,20 +138,36 @@ def find_solution(
     return None, hashes
 
 
-def _hash_worker(block, difficulty, start_nonce, stride, stop_event, output):
-    target = "0" * difficulty
+def _hash_worker(block, target, start_nonce, stride, stop_event, output):
     nonce = start_nonce
     hashes = 0
     started = last_report = time.monotonic()
     while not stop_event.is_set():
         digest = block_hash(block, nonce)
         hashes += 1
-        if digest.startswith(target):
+        if int(digest, 16) <= target:
             solved = deepcopy(block)
             solved["nonce"] = nonce
             solved["hash"] = digest
             output.put(("solved", start_nonce, hashes, time.monotonic() - started, solved))
             return
+        nonce += stride
+        now = time.monotonic()
+        if now - last_report >= 0.5:
+            output.put(("progress", start_nonce, hashes, now - started, None))
+            last_report = now
+
+
+def _share_worker(block, target, start_nonce, stride, stop_event, output):
+    """Pool worker: report every hash that meets the share target and keep going."""
+    nonce = start_nonce
+    hashes = 0
+    started = last_report = time.monotonic()
+    while not stop_event.is_set():
+        digest = block_hash(block, nonce)
+        hashes += 1
+        if int(digest, 16) <= target:
+            output.put(("share", nonce, digest, hashes, time.monotonic() - started))
         nonce += stride
         now = time.monotonic()
         if now - last_report >= 0.5:
@@ -160,6 +203,9 @@ class HelixMinerApp:
 
         self.address_var = tk.StringVar(value=address)
         self.nodes_var = tk.StringVar(value=nodes)
+        self.mode_var = tk.StringVar(value="Solo")
+        self.pool_var = tk.StringVar(value="")
+        self.shares = 0
         self.threads_var = tk.IntVar(value=max(1, min(threads, os.cpu_count() or 1)))
         self.backend_var = tk.StringVar(value="CPU")
         self.status_var = tk.StringVar(value="Stopped")
@@ -234,6 +280,17 @@ class HelixMinerApp:
         ttk.Entry(setup, textvariable=self.address_var, style="Miner.TEntry").pack(fill="x", pady=(4, 12))
         self._label(setup, "Node URL(s)").pack(anchor="w")
         ttk.Entry(setup, textvariable=self.nodes_var, style="Miner.TEntry").pack(fill="x", pady=(4, 12))
+        self._label(setup, "Mining mode").pack(anchor="w")
+        self.mode_select = ttk.Combobox(
+            setup, textvariable=self.mode_var, values=("Solo", "Pool"),
+            state="readonly", style="Miner.TCombobox",
+        )
+        self.mode_select.pack(fill="x", pady=(4, 12))
+        self.mode_select.bind("<<ComboboxSelected>>", self._mode_changed)
+        self.pool_label = self._label(setup, "Pool URL (Pool mode)")
+        self.pool_label.pack(anchor="w")
+        self.pool_entry = ttk.Entry(setup, textvariable=self.pool_var, style="Miner.TEntry")
+        self.pool_entry.pack(fill="x", pady=(4, 12))
         self._label(setup, "Mining device").pack(anchor="w")
         self.backend_select = ttk.Combobox(
             setup, textvariable=self.backend_var, values=("CPU", "NVIDIA CUDA"),
@@ -309,6 +366,10 @@ class HelixMinerApp:
     def _backend_changed(self, _event=None):
         using_cuda = self.backend_var.get() == "NVIDIA CUDA"
         self.process_select.configure(state="disabled" if using_cuda else "normal")
+
+    def _mode_changed(self, _event=None):
+        pool_mode = self.mode_var.get() == "Pool"
+        self.pool_entry.configure(state="normal" if pool_mode else "disabled")
 
     def _card(self, parent, title, row, column, columnspan=1):
         outer = tk.Frame(parent, bg=self.SURFACE, highlightbackground=self.BORDER,
@@ -394,15 +455,21 @@ class HelixMinerApp:
         except (ValueError, tk.TclError) as exc:
             self.log(str(exc))
             return
+        pool_mode = self.mode_var.get() == "Pool"
+        pool_url = self.pool_var.get().strip().rstrip("/")
+        if pool_mode and not re.match(r"^https?://", pool_url):
+            self.log("Enter the pool URL (for example https://pool.example.com) to join a pool.")
+            return
         self.running = True
+        self.shares = 0
         self.stop_event.clear()
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.status_var.set("Connecting…")
         backend = "nvidia" if self.backend_var.get() == "NVIDIA CUDA" else "cpu"
-        self.coordinator = threading.Thread(
-            target=self._mine_forever, args=(address, nodes, processes, backend), daemon=True
-        )
+        target = self._mine_pool_forever if pool_mode else self._mine_forever
+        args = (address, pool_url, processes, backend) if pool_mode else (address, nodes, processes, backend)
+        self.coordinator = threading.Thread(target=target, args=args, daemon=True)
         self.coordinator.start()
 
     def stop(self):
@@ -465,7 +532,10 @@ class HelixMinerApp:
                     continue
 
                 block = work["block"]
-                difficulty = int(work["difficulty"])
+                target = work_target(work)
+                # Show the true difficulty implied by the target, not the node's
+                # capped integer, so fine-grained levels display correctly.
+                difficulty = target_difficulty(target)
                 self.emit("status", f"Mining block {block['index']} through {node}")
                 self.emit("stats", {
                     "height": block["index"] - 1,
@@ -475,11 +545,11 @@ class HelixMinerApp:
                 if cuda_miner is not None:
                     self.emit("log", f"Started block {block['index']} at difficulty {difficulty} on {cuda_miner.device_name}.")
                     round_started = time.monotonic()
-                    solved = self._mine_round_cuda(node, block, difficulty, cuda_miner)
+                    solved = self._mine_round_cuda(node, block, target, cuda_miner)
                 else:
                     self.emit("log", f"Started block {block['index']} at difficulty {difficulty} with {processes} CPU process(es).")
                     round_started = time.monotonic()
-                    solved = self._mine_round(node, block, difficulty, processes)
+                    solved = self._mine_round(node, block, target, processes)
                 round_elapsed = time.monotonic() - round_started
                 if self.stop_event.is_set():
                     break
@@ -497,7 +567,7 @@ class HelixMinerApp:
             self.emit("status", "Stopped")
             self.emit("stopped", None)
 
-    def _mine_round(self, node, block, difficulty, process_count):
+    def _mine_round(self, node, block, target, process_count):
         started = time.monotonic()
         context = mp.get_context("spawn")
         self.round_stop = context.Event()
@@ -506,7 +576,7 @@ class HelixMinerApp:
         for index in range(process_count):
             process = context.Process(
                 target=_hash_worker,
-                args=(block, difficulty, index, process_count, self.round_stop, output),
+                args=(block, target, index, process_count, self.round_stop, output),
                 daemon=True,
             )
             process.start()
@@ -553,9 +623,9 @@ class HelixMinerApp:
             self.round_stop = None
         return solved
 
-    def _mine_round_cuda(self, node, block, difficulty, cuda_miner):
+    def _mine_round_cuda(self, node, block, target, cuda_miner):
         self.round_stop = threading.Event()
-        cuda_miner.prepare(block, difficulty)
+        cuda_miner.prepare(block, target)
         next_nonce = 0
         total = 0
         started = time.monotonic()
@@ -600,6 +670,161 @@ class HelixMinerApp:
             except (requests.RequestException, ValueError):
                 continue
         return None
+
+    # --- pool mining --------------------------------------------------------
+    def _pool_work(self, pool_url, address):
+        try:
+            response = requests.get(
+                pool_url + "/pool/work", params={"address": address}, timeout=REQUEST_TIMEOUT
+            )
+            data = response.json()
+            if response.ok and "block" in data:
+                return data
+            self.emit("log", f"Pool: {data.get('message', f'HTTP {response.status_code}')}")
+        except (requests.RequestException, ValueError) as exc:
+            self.emit("log", f"Could not get pool work from {pool_url}: {exc}")
+        return None
+
+    def _submit_share(self, pool_url, job_id, address, nonce):
+        try:
+            response = requests.post(
+                pool_url + "/pool/submit",
+                json={"job_id": job_id, "address": address, "nonce": int(nonce)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            return response.json() if response.ok else None
+        except (requests.RequestException, ValueError):
+            return None
+
+    def _handle_share(self, pool_url, address, job_id, nonce):
+        result = self._submit_share(pool_url, job_id, address, nonce)
+        if not result:
+            return
+        if result.get("accepted"):
+            self.shares += 1
+            self.emit("status", f"Pool mining · {self.shares} share(s) accepted")
+            if result.get("block"):
+                self.emit("win", None)
+                self.emit("log", "Your share solved a block for the pool! The reward is split by shares.")
+        elif result.get("reason") not in (None, "duplicate share", "stale or unknown job", "stale job"):
+            self.emit("log", f"Share rejected: {result.get('reason')}")
+
+    def _mine_pool_forever(self, address, pool_url, processes, backend="cpu"):
+        try:
+            cuda_miner = None
+            if backend == "nvidia":
+                try:
+                    from miner_cuda import NvidiaCudaMiner
+                    self.emit("status", "Initializing NVIDIA CUDA...")
+                    cuda_miner = NvidiaCudaMiner()
+                    self.emit("log", f"NVIDIA CUDA ready: {cuda_miner.device_name}")
+                except (ImportError, RuntimeError) as exc:
+                    self.emit("status", "NVIDIA CUDA unavailable")
+                    self.emit("log", str(exc))
+                    return
+            self.emit("log", f"Joining pool {pool_url} as {address}.")
+            while not self.stop_event.is_set():
+                job = self._pool_work(pool_url, address)
+                if job is None:
+                    self.emit("status", "Waiting for pool work…")
+                    self.stop_event.wait(3)
+                    continue
+                block = job["block"]
+                share_target = work_target(job)
+                network_target = int(job["network_target"], 16) if job.get("network_target") else share_target
+                share_difficulty = target_difficulty(share_target)
+                network_difficulty = target_difficulty(network_target)
+                self.emit("status", f"Pool mining block {block['index']} · share difficulty {share_difficulty}")
+                self.emit("stats", {
+                    "height": block["index"] - 1,
+                    "difficulty": network_difficulty,
+                    "reward": job.get("reward", 0),
+                })
+                self.emit("log", f"New pool job {job['job_id']} for block {block['index']} (share {share_difficulty}, network {network_difficulty}).")
+                if cuda_miner is not None:
+                    self._mine_pool_round_cuda(pool_url, address, job, cuda_miner)
+                else:
+                    self._mine_pool_round(pool_url, address, job, processes)
+        finally:
+            self.emit("status", "Stopped")
+            self.emit("stopped", None)
+
+    def _mine_pool_round(self, pool_url, address, job, process_count):
+        block = job["block"]
+        share_target = work_target(job)
+        job_id = job["job_id"]
+        context = mp.get_context("spawn")
+        self.round_stop = context.Event()
+        output = context.Queue()
+        workers = []
+        for index in range(process_count):
+            process = context.Process(
+                target=_share_worker,
+                args=(block, share_target, index, process_count, self.round_stop, output),
+                daemon=True,
+            )
+            process.start()
+            workers.append(process)
+        progress = {}
+        last_job_check = time.monotonic()
+        try:
+            while not self.stop_event.is_set() and not self.round_stop.is_set():
+                try:
+                    item = output.get(timeout=0.2)
+                    if item[0] == "share":
+                        self._handle_share(pool_url, address, job_id, item[1])
+                    elif item[0] == "progress":
+                        _, worker_id, hashes, elapsed, _ = item
+                        progress[worker_id] = (hashes, elapsed)
+                        total = sum(value[0] for value in progress.values())
+                        rate = sum(value[0] / value[1] for value in progress.values() if value[1] > 0)
+                        self.emit("performance", (total, rate))
+                except queue.Empty:
+                    pass
+                if time.monotonic() - last_job_check >= TIP_POLL_INTERVAL:
+                    last_job_check = time.monotonic()
+                    latest = self._pool_work(pool_url, address)
+                    if latest and latest.get("job_id") != job_id:
+                        self.emit("log", f"Pool advanced to block {latest['block']['index']}; refreshing work.")
+                        self.round_stop.set()
+                        break
+        finally:
+            self.round_stop.set()
+            for process in workers:
+                process.join(timeout=0.5)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=0.5)
+            output.close()
+            self.round_stop = None
+
+    def _mine_pool_round_cuda(self, pool_url, address, job, cuda_miner):
+        block = job["block"]
+        share_target = work_target(job)
+        job_id = job["job_id"]
+        self.round_stop = threading.Event()
+        cuda_miner.prepare(block, share_target)
+        next_nonce = 0
+        total = 0
+        started = last_job_check = time.monotonic()
+        try:
+            while not self.stop_event.is_set() and not self.round_stop.is_set():
+                candidate, hashes, _elapsed = cuda_miner.mine_batch(next_nonce)
+                next_nonce += hashes
+                total += hashes
+                elapsed = max(time.monotonic() - started, 0.000001)
+                self.emit("performance", (total, total / elapsed))
+                if candidate is not None:
+                    self._handle_share(pool_url, address, job_id, candidate["nonce"])
+                if time.monotonic() - last_job_check >= TIP_POLL_INTERVAL:
+                    last_job_check = time.monotonic()
+                    latest = self._pool_work(pool_url, address)
+                    if latest and latest.get("job_id") != job_id:
+                        self.emit("log", f"Pool advanced to block {latest['block']['index']}; refreshing CUDA work.")
+                        break
+        finally:
+            self.round_stop.set()
+            self.round_stop = None
 
 
 def main():

@@ -17,7 +17,7 @@ class Transaction:
     """
 
     TOKEN_TYPES = {
-        "token_create", "token_mint", "token_transfer", "token_set_authority",
+        "token_create", "token_mint", "token_burn", "token_transfer", "token_set_authority",
         "token_pool_create", "token_pool_add_hlx", "token_buy", "token_sell", "token_swap",
     }
     ZERO_AMOUNT_TYPES = {"token_create", "token_set_authority"}

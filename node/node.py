@@ -6,6 +6,7 @@ from node.blockchain import Blockchain, Block
 from node.transaction import Transaction
 from node.node_manager import get_node
 from node.peer_manager import add_peer, get_peers, get_peer_records, has_peer, normalize_peer, record_failure, record_success
+from node.pool_registry import add_pool, add_pools, get_pools
 from node.bootstrap import discover_from_bootstrap
 from node.peer_health import compatible, probe_peer
 from node.mempool import MempoolRelay
@@ -36,7 +37,7 @@ def _load_config() -> dict:
         "node": {"port": 8000, "sync_interval": 30, "version": "1.0.0", "protocol": 10, "network": "mainnet"},
         "network": {"discovery_ports": [8000, 8001, 8002, 8003, 8004, 8005], "bootstrap_nodes": [], "public_url": ""},
         "mempool": {"transaction_ttl_seconds": 3600, "rebroadcast_interval": 60, "inventory_batch_size": 500, "max_pending_transactions": 5000},
-        "blockchain": {"difficulty": 3, "difficulty_reset_value": 3, "difficulty_reset_height": 161, "reward": 10, "mining_reward": 2, "mining_reward_activation_height": 90, "fractional_mining_reward": "10", "fractional_reward_activation_height": 300, "native_dad_address": "9d7c721b209cee99a8158c524fa433ead9236781", "native_dad_activation_height": 300, "max_supply": 20000000, "min_difficulty": 3, "max_difficulty": 8, "difficulty_adjustment_interval": 10, "target_block_time_seconds": 60, "adaptive_target_block_time_seconds": 600, "adaptive_difficulty_activation_height": 60, "new_target_block_time_seconds": 160, "new_target_block_time_activation_height": 161, "difficulty_activation_height": 10, "token_metadata_activation_height": 41, "token_exchange_activation_height": 41, "token_swap_activation_height": 200, "max_orphans": 100, "orphan_ttl_seconds": 1800, "checkpoints": {}},
+        "blockchain": {"difficulty": 3, "difficulty_reset_value": 3, "difficulty_reset_height": 161, "reward": 10, "mining_reward": 2, "mining_reward_activation_height": 90, "fractional_mining_reward": "10", "fractional_reward_activation_height": 300, "native_dad_address": "9d7c721b209cee99a8158c524fa433ead9236781", "native_dad_activation_height": 300, "max_supply": 20000000, "min_difficulty": 3, "max_difficulty": 8, "difficulty_adjustment_interval": 10, "target_block_time_seconds": 60, "adaptive_target_block_time_seconds": 600, "adaptive_difficulty_activation_height": 60, "new_target_block_time_seconds": 160, "new_target_block_time_activation_height": 161, "difficulty_activation_height": 10, "fine_difficulty_activation_height": 100000000, "fine_target_block_time_seconds": 120, "token_metadata_activation_height": 41, "token_exchange_activation_height": 41, "token_swap_activation_height": 200, "max_orphans": 100, "orphan_ttl_seconds": 1800, "checkpoints": {}},
         "security": {"max_request_body_bytes": 1048576, "require_admin_api_key": False, "cors_allowed_origins": ["http://localhost", "http://127.0.0.1"]},
         "performance": {"default_page_size": 50, "max_page_size": 500},
     }
@@ -573,6 +574,27 @@ def _background_worker():
         except Exception as e:
             print("Background worker: discovery error:", e)
 
+        # 1b. Peer gossip: learn peers-of-peers from every known peer so a peer
+        # added on one node propagates to the whole network within a few cycles.
+        try:
+            public_url = str(_CONFIG["network"].get("public_url", "")).strip().rstrip("/") or None
+            gossiped = discover_from_bootstrap(get_peers(), self_url=public_url)
+            for url in gossiped:
+                print("Background worker: gossiped peer", url)
+        except Exception as e:
+            print("Background worker: peer gossip error:", e)
+
+        # 1c. Pool gossip: exchange known mining-pool URLs with every peer.
+        try:
+            for peer in get_peers():
+                try:
+                    response = requests.get(peer + "/pools", timeout=3)
+                    add_pools(response.json().get("pools", []))
+                except (requests.RequestException, ValueError, TypeError):
+                    continue
+        except Exception as e:
+            print("Background worker: pool gossip error:", e)
+
         # 2. Sync longest chain
         try:
             sync_from_peers()
@@ -680,13 +702,13 @@ def _run_mining_job(job_id: str, address: str) -> None:
 
 @app.get("/", include_in_schema=False)
 def home():
-    return FileResponse(os.path.join(PROJECT_ROOT, "web_old", "index.html"))
+    return FileResponse(os.path.join(PROJECT_ROOT, "web", "index.html"))
 
 
 @app.get("/app.js", include_in_schema=False)
 def web_application_script():
     return FileResponse(
-        os.path.join(PROJECT_ROOT, "web_old", "app.js"),
+        os.path.join(PROJECT_ROOT, "web", "app.js"),
         media_type="application/javascript",
     )
 
@@ -700,7 +722,7 @@ def web_download(filename: str):
     safe_name = allowed.get(filename)
     if safe_name is None:
         raise HTTPException(status_code=404, detail="Download not found")
-    path = os.path.join(PROJECT_ROOT, "web_old", "downloads", safe_name)
+    path = os.path.join(PROJECT_ROOT, "web", "downloads", safe_name)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Download not found")
     return FileResponse(path, media_type="application/zip", filename=safe_name)
@@ -784,6 +806,8 @@ def stats():
         "height": len(blockchain.chain) - 1,
         "chain_work": blockchain.chain_work(),
         "next_difficulty": blockchain.expected_difficulty(len(blockchain.chain), blockchain.chain),
+        "next_target": f"{blockchain.expected_target(len(blockchain.chain), blockchain.chain):064x}",
+        "fine_difficulty_active": len(blockchain.chain) >= blockchain.fine_difficulty_activation_height,
         "difficulty": blockchain.expected_difficulty(len(blockchain.chain), blockchain.chain),
         "base_difficulty": blockchain.difficulty,
         "chain_work": blockchain.chain_work(),
@@ -1243,13 +1267,16 @@ def external_mining_work(address: str):
     """Return a current block template for an independent miner."""
     try:
         address = validate_hex(address, "address", (40,))
-        block, difficulty = blockchain.create_mining_candidate(address)
+        block, difficulty, target = blockchain.create_mining_candidate(address)
     except ValueError as exc:
         return {"message": str(exc)}
     return {
         "block": block_to_dict(block),
         "difficulty": difficulty,
         "target_prefix": "0" * difficulty,
+        # Exact numeric target the proof must satisfy: int(hash, 16) <= target.
+        # Miners should compare against this; difficulty is kept for display.
+        "target": f"{target:064x}",
         "reward": block.transactions[-1].amount,
         "network": _CONFIG["node"]["network"],
     }
@@ -1406,6 +1433,25 @@ def node_info():
 @app.get("/nodes/peers")
 def public_peers():
     return {"peers": get_peers()}
+
+
+@app.get("/pools")
+def list_pools():
+    """Directory of known mining-pool URLs, gossiped across nodes."""
+    return {"pools": get_pools()}
+
+
+@app.post("/pools/register")
+def register_pool(data: dict):
+    if not isinstance(data, dict) or not isinstance(data.get("url"), str):
+        return {"message": "Malformed pool registration"}
+    if len(data.get("url", "")) > 300:
+        return {"message": "Pool URL is too long"}
+    url = normalize_peer(data["url"])
+    if not url:
+        return {"message": "Invalid pool URL"}
+    pools = add_pool(url)
+    return {"message": "Pool listed", "pools": pools}
 
 
 @app.post("/nodes/register")

@@ -3,9 +3,9 @@ import { createHash, webcrypto } from "node:crypto";
 import fs from "node:fs/promises";
 import vm from "node:vm";
 
-const html = await fs.readFile(new URL("../web_old/index.html", import.meta.url), "utf8");
-const script = await fs.readFile(new URL("../web_old/app.js", import.meta.url), "utf8");
-new vm.Script(script, { filename: "web_old/app.js" });
+const html = await fs.readFile(new URL("../web/index.html", import.meta.url), "utf8");
+const script = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8");
+new vm.Script(script, { filename: "web/app.js" });
 
 const canonicalSource = script.match(
   /function canonicalJson\(value\) \{[\s\S]*?\n\}(?=\n\nasync function signPayload)/,
@@ -20,20 +20,26 @@ assert.equal(
   "token signing bytes must match Python compact sorted JSON",
 );
 
-const exampleMetadata = JSON.parse(await fs.readFile(
-  new URL("../web_old/token-metadata.example.json", import.meta.url), "utf8",
-));
-assert.deepEqual(exampleMetadata, {
+// Hash parity uses a fixed sample independent of the shipped example file,
+// so the ground-truth hash below stays stable regardless of example content.
+const sampleMetadata = {
   name: "Slop Coin",
   symbol: "SLOP",
   description: "A very sloppy coin",
   image: "https://lime-bizarre-bobcat-829.mypinata.cloud/ipfs/bafkreicamrjs54mnjxeycnb526aocbaickusaescglkbrme3kfgcwhcf2e",
-});
+};
 assert.equal(
-  createHash("sha256").update(canonicalJson(exampleMetadata)).digest("hex"),
+  createHash("sha256").update(canonicalJson(sampleMetadata)).digest("hex"),
   "499b0861500fc6f9a375a4e606a8a279e8f8cdb05aa8473642f8d4abac00efdd",
   "browser and node must commit the same metadata snapshot hash",
 );
+// The shipped example only needs the four required fields; its values are free.
+const exampleMetadata = JSON.parse(await fs.readFile(
+  new URL("../web/token-metadata.example.json", import.meta.url), "utf8",
+));
+for (const key of ["name", "symbol", "description", "image"]) {
+  assert.ok(key in exampleMetadata, `token metadata example is missing ${key}`);
+}
 
 const addressSource = script.match(
   /async function tokenMintAddress\(creator, nonce\) \{[\s\S]*?\n\}(?=\n\nasync function signTransaction)/,
@@ -131,11 +137,12 @@ assert.match(script, /token\.display_image \|\| token\.image/);
 assert.doesNotMatch(html, /id="token-pool-token-amount"/);
 assert.match(script, /const amount = Number\(token\.balance \|\| 0\)/);
 assert.match(script, /function renderTokenPriceChart\(container, token, rawPoints\)/);
+// Candle interval options (Minute/Hour/Day/Month/Auto) and the start selector
+// that lets small values stay readable by cropping early/large data points.
 assert.match(script, /TOKEN_CHART_RANGES[\s\S]*?minute[\s\S]*?hour[\s\S]*?day[\s\S]*?month/);
 assert.match(script, /data-chart-range/);
-assert.match(script, /id="token-chart-height"/);
-assert.match(script, /id="token-chart-width"/);
-assert.match(script, /data-chart-zoom/);
+assert.match(script, /id="token-chart-start"/);
+assert.match(script, /function chartCandleInterval\(spanSeconds\) \{\s*if \(TOKEN_CHART_INTERVAL\)/);
 assert.match(script, /addEventListener\('wheel'[^]*?passive: false/);
 assert.match(script, /function buildChartCandles\(points, startSeconds, endSeconds\)/);
 assert.match(script, /class="chart-candle \${direction}/);
@@ -154,4 +161,21 @@ assert.match(script, /function openTokenMarket\(mintAddress\)/);
 assert.match(script, /tx_type: 'token_transfer'[\s\S]*?mint_address: token\.mint_address/);
 assert.match(script, /function renderSendAssets\(\)/);
 
-console.log("Custom token web_old contract: OK");
+// DAD burn control and transaction.
+assert.match(html, /id="btn-token-burn"/);
+assert.match(script, /tx_type: 'token_burn'/);
+assert.match(script, /function submitTokenBurn\(\)/);
+// Total wallet value (in HLX) shown at the top of the dashboard.
+assert.match(script, /function walletTotalValueHlx\(\)/);
+assert.match(script, /balance \* hlxReserve \/ tokenReserve/);
+// Chart start is a date/time picker, and one token per line.
+assert.match(script, /type="datetime-local"/);
+assert.match(html, /\.token-list \{ display:grid; grid-template-columns:1fr;/);
+// Dedicated Swap tab.
+assert.match(html, /data-token-pane="swap"/);
+assert.match(html, /id="token-pane-swap"/);
+assert.match(html, /id="btn-swap-tokens"/);
+assert.match(script, /function renderSwapPane\(\)/);
+assert.match(script, /function submitStandaloneSwap\(\)/);
+
+console.log("Custom token web contract: OK");

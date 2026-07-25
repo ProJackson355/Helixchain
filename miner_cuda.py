@@ -163,15 +163,25 @@ class NvidiaCudaMiner:
             raise RuntimeError(f"CUDA initialization failed: {exc}") from exc
         self.block = None
         self.difficulty = 0
+        self.target = 16 ** 64 - 1
         self.prefix = None
         self.suffix = None
 
-    def prepare(self, block: dict, difficulty: int) -> None:
-        if not 0 <= int(difficulty) <= 64:
-            raise ValueError("Difficulty must be between 0 and 64 hexadecimal digits.")
+    def prepare(self, block: dict, target: int) -> None:
+        """Prepare a job for a numeric proof-of-work target.
+
+        The kernel searches by whole leading-zero nibbles, so we use the target's
+        own leading zeros as a fast GPU pre-filter and verify the exact target on
+        the CPU side. A leading-zero difficulty D is just target 16**(64-D)-1.
+        """
+        target = int(target)
+        if not 0 <= target <= (16 ** 64 - 1):
+            raise ValueError("Target must be a 256-bit value.")
         prefix, suffix = canonical_block_parts(block)
         self.block = deepcopy(block)
-        self.difficulty = int(difficulty)
+        self.target = target
+        hexstr = f"{target:064x}"
+        self.difficulty = len(hexstr) - len(hexstr.lstrip("0"))
         self.prefix = self.cp.asarray(bytearray(prefix), dtype=self.cp.uint8)
         self.suffix = self.cp.asarray(bytearray(suffix), dtype=self.cp.uint8)
 
@@ -198,8 +208,10 @@ class NvidiaCudaMiner:
             return None, count, elapsed
         nonce = int(self.result_nonce.get()[0])
         digest = canonical_block_hash(self.block, nonce)
-        if not digest.startswith("0" * self.difficulty):
-            raise RuntimeError("CUDA returned a proof that failed CPU consensus verification")
+        if int(digest, 16) > self.target:
+            # Cleared the leading-zero pre-filter but not the exact target;
+            # report no solution so the caller keeps scanning further nonces.
+            return None, count, elapsed
         solved = deepcopy(self.block)
         solved["nonce"] = nonce
         solved["hash"] = digest

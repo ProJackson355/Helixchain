@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import vm from "node:vm";
 
-const html = await fs.readFile(new URL("../web_old/index.html", import.meta.url), "utf8");
-const script = await fs.readFile(new URL("../web_old/app.js", import.meta.url), "utf8");
+const html = await fs.readFile(new URL("../web/index.html", import.meta.url), "utf8");
+const script = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8");
 assert.match(html, /id="btn-delete-wallet"/, "delete-wallet button is missing");
 assert.match(html, /id="delete-wallet-alert"/, "delete-wallet feedback area is missing");
 
