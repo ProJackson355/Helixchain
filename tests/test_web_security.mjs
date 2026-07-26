@@ -6,7 +6,7 @@ const script = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf
 const headers = await fs.readFile(new URL("../web/_headers", import.meta.url), "utf8");
 
 assert.doesNotMatch(html, /\son(?:click|error|load)\s*=/i);
-assert.match(html, /<script src="\/app\.js" defer><\/script>/);
+assert.match(html, /<script src="\/app\.js(?:\?v=[^"]*)?" defer><\/script>/);
 assert.doesNotMatch(html, /<script>([\s\S]*?)<\/script>/);
 const alertFunction = script.match(/function setAlert\([\s\S]*?\n}/)?.[0];
 assert.ok(alertFunction, "setAlert helper should exist");

@@ -2,8 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Helix Wallet</title>
+  <!-- PWA: installable on Android, iOS, and desktop -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#7c5cfc" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Helix" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -43,7 +52,7 @@
     .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; }
     .logo-hex {
       width: 32px; height: 32px; background: var(--grad); border-radius: 9px;
-      display: grid; place-items: center; font-size: 17px;
+      display: grid; place-items: center; font-size: 17px; object-fit: cover;
       box-shadow: 0 4px 14px -4px #7c5cfc99;
     }
     .token-native-logo { display:inline-grid; flex-shrink:0; color:#fff; }
@@ -495,7 +504,7 @@
 <div id="app">
 <header>
   <div class="logo">
-    <div class="logo-hex">⬡</div>
+    <img class="logo-hex" src="/icons/icon-maskable-512.png" alt="Helix logo" width="32" height="32" />
     Helix
   </div>
   <nav id="main-nav" style="display:none">
@@ -1140,7 +1149,10 @@
 </div>
 <div id="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
-<script src="/app.js" defer></script>
+<!-- Self-hosted QR generator (no external CDN dependency). -->
+<script src="/qrcode.js?v=1" defer></script>
+<!-- Bump the ?v= version whenever app.js changes so browsers don't serve a stale cached copy. -->
+<script src="/app.js?v=20260727" defer></script>
+<script src="/pwa.js?v=1" defer></script>
 </body>
 </html>

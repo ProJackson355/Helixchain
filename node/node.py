@@ -725,6 +725,49 @@ def web_application_script():
     )
 
 
+@app.get("/qrcode.js", include_in_schema=False)
+def web_qrcode_library():
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "qrcode.js"),
+        media_type="application/javascript",
+    )
+
+
+@app.get("/pwa.js", include_in_schema=False)
+def web_pwa_script():
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "pwa.js"),
+        media_type="application/javascript",
+    )
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def web_manifest():
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "manifest.webmanifest"),
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/sw.js", include_in_schema=False)
+def web_service_worker():
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "sw.js"),
+        media_type="application/javascript",
+    )
+
+
+@app.get("/icons/{filename}", include_in_schema=False)
+def web_icon(filename: str):
+    allowed = {"icon-192.png", "icon-512.png", "icon-maskable-512.png"}
+    if filename not in allowed:
+        raise HTTPException(status_code=404, detail="Icon not found")
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "icons", filename),
+        media_type="image/png",
+    )
+
+
 @app.get("/downloads/{filename}", include_in_schema=False)
 def web_download(filename: str):
     allowed = {

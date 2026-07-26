@@ -835,6 +835,7 @@ function afterLogin({ persist = true, expiresAt = null } = {}) {
   if (persist) persistSession();
   else scheduleSessionExpiry(expiresAt);
   showPanel('dashboard');
+  applyPendingSendTo();
 }
 
 function lockWallet(toastMessage = 'Wallet locked', alertMessage = '') {
@@ -3010,16 +3011,23 @@ function renderReceiveQr(address) {
   const wrap = document.getElementById('recv-qr-wrap');
   const holder = document.getElementById('recv-qr');
   if (!wrap || !holder || !address) return;
-  holder.innerHTML = '';
-  if (typeof QRCode === 'undefined') { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';   // always show the box so it never silently vanishes
+  const unavailable = '<span style="color:#0d0f14;font:12px system-ui;display:block;padding:6px">QR code unavailable</span>';
+  if (typeof qrcode === 'undefined') { holder.innerHTML = unavailable; return; }
   try {
-    new QRCode(holder, {
-      text: address, width: 176, height: 176,
-      colorDark: '#0d0f14', colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M,
-    });
-    wrap.style.display = 'flex';
-  } catch (_) { wrap.style.display = 'none'; }
+    const qr = qrcode(0, 'M');       // auto-size, medium error correction
+    // Encode a deep link so scanning opens the wallet on the Send tab with this
+    // address prefilled as the recipient (falls back to the site if not installed).
+    qr.addData(`${location.origin}/?to=${address}`);
+    qr.make();
+    holder.innerHTML = qr.createImgTag(5, 8);
+    const img = holder.querySelector('img');
+    if (img) {
+      img.removeAttribute('width'); img.removeAttribute('height');
+      img.style.cssText = 'display:block;width:180px;height:180px;image-rendering:pixelated';
+      img.alt = 'Receive address QR code';
+    }
+  } catch (_) { holder.innerHTML = unavailable; }
 }
 
 async function renderNetworkChart() {
@@ -3266,9 +3274,35 @@ document.getElementById('pool-url').addEventListener('keydown', event => {
 // ============================================================
 // SECTION 14 — Startup
 // ============================================================
+// Deep link: /?to=<address> opens the Send tab with the recipient prefilled.
+let PENDING_SEND_TO = null;
+
+function parseDeepLink() {
+  try {
+    const to = new URLSearchParams(location.search).get('to');
+    if (to && /^[0-9a-f]{40}$/i.test(to)) PENDING_SEND_TO = to.toLowerCase();
+    // Strip it from the URL so a later refresh doesn't reapply it.
+    if (to && location.search) history.replaceState({}, '', location.pathname);
+  } catch (_) {}
+}
+
+function applyPendingSendTo() {
+  if (!PENDING_SEND_TO) return;
+  const to = PENDING_SEND_TO; PENDING_SEND_TO = null;
+  showPanel('send');
+  const asset = document.getElementById('send-asset');
+  if (asset) { asset.value = 'HLX'; asset.dispatchEvent(new Event('change')); }
+  const input = document.getElementById('send-to');
+  if (input) input.value = to;
+  const amount = document.getElementById('send-amount');
+  if (amount) amount.focus();
+  toast('Recipient filled from QR code', 'ok');
+}
+
 (async () => {
   document.getElementById('node-banner').style.display = 'flex';
   prepareWalletNameInput();
+  parseDeepLink();
 
   const restored = await restoreSession();
   if (!restored) {
