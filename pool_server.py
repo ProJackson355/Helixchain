@@ -13,7 +13,7 @@ Run it with run_pool.py. Configuration comes from environment variables:
 
   HELIX_POOL_SEED            12-word seed of the pool wallet (required for payouts)
   HELIX_POOL_ADDRESS         override the payout address (defaults to the seed's)
-  HELIX_POOL_NODE            node URL(s) for templates/submits (default 127.0.0.1:8000)
+  HELIX_POOL_NODE            node URL(s) for templates/submits (default https://node.hlxchain.com)
   HELIX_POOL_SHARE_SUBTRACT  share difficulty = network difficulty - this (default 2)
   HELIX_POOL_MIN_SHARE_DIFFICULTY  floor for share difficulty (default 1)
   HELIX_POOL_FEE_PERCENT     operator fee kept from each block (default 1.0)
@@ -51,7 +51,7 @@ def leading_zero_difficulty(target: int) -> int:
 
 
 def _env_nodes() -> list[str]:
-    raw = os.getenv("HELIX_POOL_NODE", "http://127.0.0.1:8000")
+    raw = os.getenv("HELIX_POOL_NODE", "https://node.hlxchain.com")
     return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
 
 
@@ -116,7 +116,7 @@ class Pool:
 
     # --- node I/O -----------------------------------------------------------
     def _node(self) -> str:
-        return self.nodes[0] if self.nodes else "http://127.0.0.1:8000"
+        return self.nodes[0] if self.nodes else "https://node.hlxchain.com"
 
     def refresh_job(self, force: bool = False) -> dict | None:
         with self.lock:
@@ -334,6 +334,17 @@ app = FastAPI(lifespan=lifespan, title="Helix Mining Pool")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"],
 )
+
+
+@app.middleware("http")
+async def _disable_caching(request, call_next):
+    """Pool stats are live and change every round. Without this, Cloudflare (or
+    the browser) can serve a stale snapshot -- e.g. old block counts or miners
+    still listed after the pool is restarted. Force every response fresh."""
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.get("/pool/info")

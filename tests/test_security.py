@@ -53,6 +53,35 @@ class SecurityClientIpTests(unittest.TestCase):
         with patch.dict("os.environ", {"HELIX_ADMIN_API_KEY": "correct-secret"}):
             self.assertEqual(manager.client_ip(scope), "203.0.113.42")
 
+    def test_keyless_node_ignores_spoofed_client_ip_header(self):
+        # Default posture: no admin key required. A direct caller reaching the
+        # node through the loopback tunnel must not be able to spoof its IP via
+        # x-helix-client-ip -- the real edge IP (cf-connecting-ip) wins.
+        manager = self.manager()  # no require_admin_api_key -> defaults False
+        scope = {
+            "client": ("127.0.0.1", 50000),
+            "headers": [
+                (b"cf-connecting-ip", b"203.0.113.42"),
+                (b"x-helix-client-ip", b"198.51.100.25"),
+            ],
+        }
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(manager.client_ip(scope), "203.0.113.42")
+
+    def test_keyless_node_cannot_be_spoofed_to_loopback(self):
+        # An attacker setting x-helix-client-ip to 127.0.0.1 must not become the
+        # unbannable loopback identity when no admin key is configured.
+        manager = self.manager()
+        scope = {
+            "client": ("127.0.0.1", 50000),
+            "headers": [
+                (b"cf-connecting-ip", b"203.0.113.42"),
+                (b"x-helix-client-ip", b"127.0.0.1"),
+            ],
+        }
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(manager.client_ip(scope), "203.0.113.42")
+
     def test_invalid_forwarded_ip_falls_back_to_loopback(self):
         scope = {
             "client": ("127.0.0.1", 50000),

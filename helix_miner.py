@@ -24,7 +24,7 @@ import requests
 
 
 ADDRESS_RE = re.compile(r"^[0-9a-f]{40}$")
-DEFAULT_NODE = "http://127.0.0.1:8000"
+DEFAULT_NODE = "https://node.hlxchain.com"
 REQUEST_TIMEOUT = 5
 TIP_POLL_INTERVAL = 1.0
 

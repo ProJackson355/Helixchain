@@ -106,7 +106,7 @@ def test_difficulty_rises_without_upper_cap(tmp_path):
         difficulty_activation_height=100,
         fine_target_block_time_seconds=120,
     )
-    # Many windows of 1s-apart blocks -> keeps hardening 4x per window.
+    # Many windows of 1s-apart blocks -> keeps hardening each window.
     fast = [SimpleNamespace(index=i, timestamp=float(i), hash="0" * 64) for i in range(41)]
     hardest_old_cap = bc.difficulty_to_target(bc.max_difficulty)
     result = bc.expected_target(40, fast)

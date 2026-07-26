@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -164,6 +165,29 @@ class Blockchain:
         # min_difficulty (so blocks can't become trivially easy).
         self.fine_target_block_time_seconds = int(setting(
             "fine_target_block_time_seconds", "HELIX_FINE_TARGET_BLOCK_TIME", 120
+        ))
+        # Starting difficulty the fine retarget seeds from (may be fractional,
+        # e.g. 5.5). 0 disables it, falling back to the legacy integer seed.
+        self.fine_initial_difficulty = float(setting(
+            "fine_initial_difficulty", "HELIX_FINE_INITIAL_DIFFICULTY", 0
+        ) or 0)
+        # Largest difficulty move allowed in a single retarget window. The move
+        # is proportional to how far the window's average block time was from
+        # target, so a sub-second average hardens far more than an 8-minute one;
+        # this only bounds the extreme so one manipulated timestamp can't swing
+        # difficulty arbitrarily. A larger factor = snappier response.
+        self.fine_max_adjust_factor = max(2, int(setting(
+            "fine_max_adjust_factor", "HELIX_FINE_MAX_ADJUST_FACTOR", 16
+        )))
+        # At and above this height the fine-difficulty retarget aims for a longer
+        # target block time (e.g. 10 minutes), leaving earlier windows unchanged.
+        self.fine_new_target_block_time_activation_height = int(setting(
+            "fine_new_target_block_time_activation_height",
+            "HELIX_FINE_NEW_TARGET_BLOCK_TIME_HEIGHT", 100000000
+        ))
+        self.fine_new_target_block_time_seconds = int(setting(
+            "fine_new_target_block_time_seconds",
+            "HELIX_FINE_NEW_TARGET_BLOCK_TIME", 600
         ))
         self.token_metadata_activation_height = int(
             setting("token_metadata_activation_height", "HELIX_TOKEN_METADATA_ACTIVATION_HEIGHT", 41)
@@ -1210,15 +1234,43 @@ class Blockchain:
             return self.adaptive_target_block_time
         return self.target_block_time
 
-    @staticmethod
-    def difficulty_to_target(difficulty: int) -> int:
-        """The numeric target equal to a whole leading-zero difficulty level.
+    def fine_block_time_for_height(self, block_index: int) -> int:
+        """Per-block target time used by the fine-difficulty retarget."""
+        if block_index >= self.fine_new_target_block_time_activation_height:
+            return self.fine_new_target_block_time_seconds
+        return self.fine_target_block_time_seconds
 
-        A hash has `difficulty` leading hex zeros iff its value is <= this, so
-        the legacy rule is exactly the numeric-target rule at these points.
+    @staticmethod
+    def difficulty_to_target(difficulty) -> int:
+        """The numeric target for a difficulty level, which may be fractional.
+
+        A whole difficulty `d` maps to `16**(64-d) - 1`, i.e. `2**(256-4d) - 1`,
+        so a hash has `d` leading hex zeros iff its value is <= this. Fractional
+        difficulty extends the same curve: the target is `2**(256-4d) - 1`. When
+        `256 - 4d` is a whole number of bits (any multiple of 0.25, e.g. 5.5 ->
+        234 bits) this is computed with exact integer math so it stays
+        deterministic across machines; other fractions use a float exponent.
         """
-        difficulty = max(0, min(64, int(difficulty)))
-        return 16 ** (64 - difficulty) - 1
+        difficulty = max(0.0, min(64.0, float(difficulty)))
+        bits = 256 - 4 * difficulty          # target + 1 == 2 ** bits
+        if bits <= 0:
+            return 0
+        if bits == int(bits):                # exact, deterministic integer path
+            return (1 << int(bits)) - 1
+        whole = int(bits)
+        return int((1 << whole) * (2.0 ** (bits - whole))) - 1
+
+    @staticmethod
+    def target_to_difficulty(target: int) -> float:
+        """The (possibly fractional) difficulty a numeric target represents.
+
+        Inverse of ``difficulty_to_target``: ``difficulty = 64 - log16(target+1)``.
+        For display/stats only -- never used in consensus validation.
+        """
+        try:
+            return round(64 - math.log(int(target) + 1, 16), 2)
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def hash_meets_target(block_hash: str, target: int) -> bool:
@@ -1243,23 +1295,31 @@ class Blockchain:
 
         interval = max(2, self.difficulty_adjustment_interval)
         easiest = self.difficulty_to_target(self.min_difficulty)   # largest target = difficulty floor
-        # Expected time for one window: 2 minutes per block by default, across
-        # the (interval - 1) gaps between the window's blocks.
-        expected = max(1, self.fine_target_block_time_seconds * max(1, interval - 1))
-        # Seed from the difficulty in force at the activation boundary.
-        target = self.difficulty_to_target(self.expected_difficulty(activation, chain))
+        # Seed from the configured starting difficulty (which may be fractional),
+        # or, if unset, from the difficulty in force at the activation boundary.
+        if self.fine_initial_difficulty > 0:
+            target = self.difficulty_to_target(self.fine_initial_difficulty)
+        else:
+            target = self.difficulty_to_target(self.expected_difficulty(activation, chain))
         for boundary in range(activation + interval, next_index + 1, interval):
             if boundary > len(chain):
                 continue
             window = chain[boundary - interval:boundary]
             if len(window) < interval:
                 continue
+            # Expected time for one window across its (interval - 1) gaps. The
+            # per-block target lengthens (e.g. to 10 minutes) once the retarget
+            # takes effect for blocks at/after its activation height.
+            expected = max(1, self.fine_block_time_for_height(boundary) * max(1, interval - 1))
             elapsed = max(1, int(window[-1].timestamp - window[0].timestamp))
             # Average block time above target (elapsed > expected) -> a larger
-            # target -> easier. Below target -> a smaller target -> harder.
+            # target -> easier. Below target -> a smaller target -> harder. The
+            # size of the move scales with elapsed/expected: the further from
+            # target the average was, the bigger the change, up to a bounded max.
+            factor = self.fine_max_adjust_factor
             adjusted = target * elapsed // expected
-            adjusted = min(adjusted, target * 4)      # ease at most 4x per window
-            adjusted = max(adjusted, target // 4)      # harden at most 4x per window
+            adjusted = min(adjusted, target * factor)  # ease at most factor x per window
+            adjusted = max(adjusted, target // factor)  # harden at most factor x per window
             # Floor difficulty at min_difficulty (largest target); no upper cap,
             # so difficulty can keep rising forever without manual changes.
             target = min(easiest, max(1, adjusted))

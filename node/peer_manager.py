@@ -17,6 +17,14 @@ def _config() -> dict:
         data["node"].update(loaded.get("node", {})); data["network"].update(loaded.get("network", {}))
     except (OSError, ValueError, TypeError):
         pass
+    env_bootstrap = os.getenv("HELIX_BOOTSTRAP_NODES", "")
+    if env_bootstrap:
+        existing = list(data["network"].get("bootstrap_nodes", []))
+        for candidate in env_bootstrap.split(","):
+            candidate = candidate.strip()
+            if candidate and candidate not in existing:
+                existing.append(candidate)
+        data["network"]["bootstrap_nodes"] = existing
     return data
 
 

@@ -65,7 +65,7 @@ class SecurityManager:
             }
             forwarded = ""
             worker_forwarded = headers.get("x-helix-client-ip", "").strip()
-            if worker_forwarded and self.valid_api_key(headers.get("x-helix-api-key")):
+            if worker_forwarded and self._proxy_headers_trusted(headers.get("x-helix-api-key")):
                 forwarded = worker_forwarded
             if not forwarded:
                 forwarded = headers.get("cf-connecting-ip", "").strip()
@@ -165,6 +165,20 @@ class SecurityManager:
     def valid_api_key(self, supplied: str | None) -> bool:
         if not self.admin_required():
             return True
+        return self._proxy_headers_trusted(supplied)
+
+    def _proxy_headers_trusted(self, supplied: str | None) -> bool:
+        """Whether a request carries the real, configured admin key.
+
+        Unlike ``valid_api_key`` this never returns True just because admin
+        auth is disabled. It gates trust of the ``x-helix-client-ip`` header
+        that the Cloudflare Worker sets: because a same-host tunnel delivers
+        every visitor from loopback, trusting that header without proving the
+        caller is the Worker would let any direct caller spoof their IP (even
+        to ``127.0.0.1``) and evade rate limits and bans. When no key is
+        configured the header is ignored and the real edge IP
+        (``cf-connecting-ip``) is used instead.
+        """
         configured = str(os.getenv("HELIX_ADMIN_API_KEY", self.config.get("admin_api_key", "")))
         if not configured or not supplied:
             return False

@@ -54,6 +54,17 @@ def _load_config() -> dict:
         defaults["performance"].update(loaded.get("performance", {}))
     except (OSError, ValueError, TypeError):
         pass
+    # HELIX_BOOTSTRAP_NODES (comma-separated URLs) merges into the configured
+    # bootstrap list without editing config.json. Empty by default, so this is a
+    # no-op until a stable seed node (e.g. a named-tunnel domain) is provided.
+    env_bootstrap = os.getenv("HELIX_BOOTSTRAP_NODES", "")
+    if env_bootstrap:
+        existing = list(defaults["network"].get("bootstrap_nodes", []))
+        for candidate in env_bootstrap.split(","):
+            candidate = candidate.strip()
+            if candidate and candidate not in existing:
+                existing.append(candidate)
+        defaults["network"]["bootstrap_nodes"] = existing
     return defaults
 
 
@@ -809,7 +820,9 @@ def stats():
         "next_difficulty": blockchain.expected_difficulty(len(blockchain.chain), blockchain.chain),
         "next_target": f"{blockchain.expected_target(len(blockchain.chain), blockchain.chain):064x}",
         "fine_difficulty_active": len(blockchain.chain) >= blockchain.fine_difficulty_activation_height,
-        "difficulty": blockchain.expected_difficulty(len(blockchain.chain), blockchain.chain),
+        "difficulty": blockchain.target_to_difficulty(
+            blockchain.expected_target(len(blockchain.chain), blockchain.chain)
+        ),
         "base_difficulty": blockchain.difficulty,
         "chain_work": blockchain.chain_work(),
         "orphan_blocks": len(blockchain.orphan_blocks),
@@ -824,6 +837,33 @@ def stats():
         "target_block_time_seconds": blockchain.target_block_time_for_height(len(blockchain.chain)),
         "token_swap_activation_height": blockchain.token_swap_activation_height,
         "token_swap_active": len(blockchain.chain) >= blockchain.token_swap_activation_height,
+    }
+
+
+@app.get("/network/history")
+def network_history(limit: int = 60):
+    """Recent per-block difficulty and timestamp, for the network chart.
+
+    Read-only: derives each block's difficulty from the proof-of-work target it
+    had to meet (target_to_difficulty of expected_target). Does not touch
+    consensus, validation, or mining.
+    """
+    chain = blockchain.chain
+    limit = max(2, min(200, int(limit)))
+    start = max(1, len(chain) - limit)   # skip the transactionless genesis block
+    points = []
+    for index in range(start, len(chain)):
+        block = chain[index]
+        target = blockchain.expected_target(index, chain)
+        points.append({
+            "height": index,
+            "timestamp": block.timestamp,
+            "difficulty": blockchain.target_to_difficulty(target),
+            "tx_count": len(block.transactions),
+        })
+    return {
+        "points": points,
+        "target_block_time_seconds": blockchain.fine_target_block_time_seconds,
     }
 
 

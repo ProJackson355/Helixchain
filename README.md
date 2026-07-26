@@ -6,7 +6,7 @@ Helix is an educational proof-of-work cryptocurrency project with encrypted wall
 
 ### 2026-07-24
 
-- **Bitcoin-style fine-grained difficulty.** Proof of work can use a numeric target (a block is valid when `int(hash, 16) <= target`) that retargets smoothly every 10 blocks toward a 2-minute average — no upper cap (floored at `min_difficulty`), bounded to a 4x move per window. It is gated by `blockchain.fine_difficulty_activation_height` so existing chains stay valid; below that height the classic leading-zero rule is byte-for-byte unchanged.
+- **Bitcoin-style fine-grained difficulty.** Proof of work can use a numeric target (a block is valid when `int(hash, 16) <= target`) that retargets smoothly every 10 blocks toward a target average block time — no upper cap (floored at `min_difficulty`), bounded to a 4x move per window. It is gated by `blockchain.fine_difficulty_activation_height` so existing chains stay valid; below that height the classic leading-zero rule is byte-for-byte unchanged. The retarget aims for a **10-minute** average block time (`fine_target_block_time_seconds`) and seeds from a configurable starting difficulty that may be fractional (`fine_initial_difficulty`, e.g. **5.5**).
 - **Mining pools.** New `pool_server.py` / `run_pool.py` let anyone host a pool that pays miners proportionally to the shares (hashrate) they contribute, minus a configurable fee. Helix Miner gained a **Pool** mode, and the wallet has a shared **Pools** directory tab that lists pools (fee, active miners, online status) and gossips them across nodes.
 - **DAD token burn.** A new `token_burn` transaction lets the DAD authority destroy tokens from its balance and lower the total minted supply.
 - **Dedicated Swap tab**, a **total wallet value** (priced in HLX) at the top of the Dashboard, and token lists that show one asset per line.
@@ -28,6 +28,58 @@ Helix is an educational proof-of-work cryptocurrency project with encrypted wall
 - Added an optional NVIDIA CUDA backend to Helix Miner with CPU verification of every GPU-discovered proof.
 - Restored the 10 HLX mining reward from block 300 onward.
 - Reset proof-of-work difficulty to 3 at block 161 under peer protocol 10; automatic 10-block adjustments resume after a complete post-reset window.
+
+## How the blockchain works
+
+**Blocks and the chain.** The chain begins with a fixed, empty genesis block.
+Every block after it contains a list of transactions plus exactly one mining
+reward, is identified by its SHA-256 hash, and references its parent by that
+parent's hash. Altering anything in a block changes its hash and breaks every
+block that follows, which is what makes the history tamper-evident.
+
+**Proof of work and difficulty.** A block is valid only if its hash, read as a
+number, is at most the current **target**: `int(hash, 16) <= target`. Miners
+vary a nonce until the hash falls under the target; a smaller target is harder.
+Helix uses a fine-grained numeric target, so difficulty is continuous instead of
+jumping in 16x steps: `difficulty = 64 - log16(target + 1)`, and it may be
+fractional. The chain seeds at difficulty **5.5** from block 1 and retargets
+every 10 blocks toward a **10-minute** average block time. Each adjustment scales
+with how far the recent average was from target (a burst of very fast blocks
+hardens far more than slightly-fast ones), bounded to a large but finite move per
+window (`fine_max_adjust_factor`), with no upper cap and a floor at the minimum
+difficulty. See `blockchain.expected_target`.
+
+**Transactions.** Transactions are signed with secp256k1 keys held only in the
+user's browser — the network is non-custodial. Besides a plain HLX transfer, a
+transaction can create a token, mint, transfer, change a token's DAD authority,
+create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn. A submitted
+transaction stays **pending** in the mempool until a miner includes it in a block.
+
+**Mining and rewards.** Mining runs on the miner's own hardware, not the node: a
+miner pulls a work template (`GET /mining/work`), hashes it locally on CPU, GPU,
+or through a pool, and submits the solved block (`POST /mining/submit`). Each
+valid block pays its miner a single `SYSTEM` reward transaction — the only way
+new HLX is ever created, and never beyond `max_supply`.
+
+**Consensus (which chain is real).** Nodes follow the chain with the most
+**accumulated proof-of-work** (`chain_work = sum of MAX_HASH // (target + 1)`),
+not merely the longest. If two miners find a block at the same height at once, the
+network briefly splits and each node keeps the block it saw first; `replace_chain`
+only switches when another branch has strictly more work. The tie breaks when the
+next block extends one branch, making it heavier — every node then reorganizes
+onto it. The abandoned block is **orphaned**: its ordinary transactions return to
+the mempool, and its reward is discarded, so only the winning miner is paid.
+Configured **checkpoints** prevent any reorg from rewriting history past a fixed
+point.
+
+**Networking.** Nodes communicate over HTTP. A new node joins by contacting a
+bootstrap **seed** (shipped: `https://node.hlxchain.com`), then discovers the rest
+through peer gossip. Every 30 seconds each node discovers peers, pulls the
+heaviest chain available, and re-audits every block's hash.
+
+**Tokens and swaps.** Custom tokens trade against HLX through constant-product
+liquidity pools with a 0.3% fee. HLX is the base asset and the stable unit of
+account the wallet prices everything in.
 
 ## Requirements
 
@@ -91,6 +143,54 @@ If you expose a node with TryCloudflare, verify its public `/health` endpoint,
 then submit the working `trycloudflare.com` URL from the wallet's **Nodes** tab
 ("Submit your node for the shared list") so it can be considered for the Helix
 node list. Temporary TryCloudflare URLs change when the tunnel restarts.
+
+### Running a shared network (seed / bootstrap nodes)
+
+New nodes join a network by connecting to a **bootstrap (seed) node** on
+startup, then discovering everyone else through peer/pool gossip. This build
+ships with the public seed **`https://node.hlxchain.com`** in
+`network.bootstrap_nodes`, so a downloaded node auto-joins the Helix network on
+startup with no configuration. To point nodes at a different network, change the
+seed in either place:
+
+- `network.bootstrap_nodes` in `config.json` (a JSON array), or
+- the `HELIX_BOOTSTRAP_NODES` environment variable (comma-separated URLs), which
+  merges with the config list and needs no file edit. For a stable
+seed that survives restarts, run your node behind a **named Cloudflare Tunnel**
+on a domain you own (e.g. `https://seed.yourdomain.com`) rather than a temporary
+TryCloudflare URL, and use that as the bootstrap value. Every downloaded node
+then auto-joins your network on startup.
+
+### Running a permanent node for free
+
+A "permanent" node needs a **stable public address** and a **machine that stays
+on**. You can get both without paying — options below, most robust first.
+Whatever address you end up with, put it in the installer's **Public URL** field
+(or `network.public_url` in `config.json`) and the node advertises it and
+registers with the seed automatically.
+
+- **Oracle Cloud "Always Free" VM** — a free-forever cloud server (generous ARM
+  allowance) with a **permanent public IP**. Run the node there so it's always on
+  *and* reachable — no home PC required. Point a DNS name at the IP or run
+  `cloudflared` on the VM for HTTPS. Closest thing to a real permanent node
+  without paying.
+- **Tailscale Funnel** — free, stable HTTPS hostname like
+  `mynode.tailnet.ts.net`, no domain and no port forwarding, works behind CGNAT.
+  Run the agent next to the node and expose port 8000; the home machine just has
+  to stay on.
+- **ngrok free static domain** — the free plan includes one fixed
+  `*.ngrok-free.app` subdomain that doesn't rotate like the quick tunnel.
+- **playit.gg / Pinggy** — free tunnels that also work behind CGNAT (some free
+  URLs rotate — check before relying on them).
+- **Home port-forward + free dynamic DNS (DuckDNS)** — forward port 8000 and
+  point a free `you.duckdns.org` name at it. Only works with a real public IP
+  (not CGNAT), and exposes your home IP.
+
+The catch on every home option: the computer must stay powered on to be
+reachable, so an always-free cloud VM is the only way to get "permanent" without
+paying *or* leaving a PC running 24/7. Everyone else can keep using the free
+quick tunnel — it just rotates its URL on each restart. The shipped seed
+`node.hlxchain.com` handles bootstrap either way.
 
 ## Helix Miner
 

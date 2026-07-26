@@ -380,9 +380,16 @@ function setNodeStatus(state, url) {
     clearTimeout(banner._t);
     banner._t = setTimeout(() => { banner.style.display = 'none'; }, 3000);
   } else {
-    dot.style.background = 'var(--red)';
-    dot.style.animation  = '';
-    text.replaceChildren(document.createTextNode('No Helix node found. Start the node then '));
+    dot.style.animation = '';
+    // On a deployed site, "no node reachable" means the network is down, so show
+    // a friendly maintenance notice. Local development keeps the developer hint.
+    if (LOCAL_HOSTS.has(window.location.hostname)) {
+      dot.style.background = 'var(--red)';
+      text.replaceChildren(document.createTextNode('No Helix node found. Start the node then '));
+    } else {
+      dot.style.background = 'var(--orange)';
+      text.replaceChildren(document.createTextNode('🛠 The Helix network is under maintenance right now — balances, sending, and mining are temporarily unavailable. Please check back soon or '));
+    }
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.className = 'btn-link';
@@ -455,12 +462,15 @@ function hasActiveSession() {
 
 function persistSession() {
   const expiresAt = Date.now() + SESSION_LIFETIME_MS;
-  // Private keys are NEVER stored. We keep only a non-sensitive breadcrumb (the
-  // wallet name) so the unlock form can pre-fill after a page refresh; the user
-  // re-enters their password, which decrypts the key held in localStorage. The
-  // decrypted key exists only in memory while the wallet is unlocked.
+  // Tab-scoped session so a page reload keeps the wallet unlocked. This lives in
+  // sessionStorage only (cleared when the tab closes, on lock, or after one
+  // hour) — it never touches localStorage or disk. The encrypted-at-rest key in
+  // localStorage stays the source of truth for unlocking with a password.
   sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
     name: S.name,
+    address: S.address,
+    privateKeyHex: _bytesToHex(S.privateKey),
+    publicKeyHex: _bytesToHex(S.publicKey),
     expiresAt,
   }));
   scheduleSessionExpiry(expiresAt);
@@ -468,19 +478,38 @@ function persistSession() {
 
 async function restoreSession() {
   const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
-  clearSessionRecord();
   if (!raw) return false;
+  let expired = false;
   try {
     const saved = JSON.parse(raw);
+    const privateKeyHex = String(saved.privateKeyHex || '');
+    const publicKeyHex = String(saved.publicKeyHex || '');
     const expiresAt = Number(saved.expiresAt);
-    if (typeof saved.name === 'string' && _loadStore()[saved.name]
-        && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-      // No key is stored, so we cannot silently restore the unlocked wallet;
-      // pre-fill the name and require the password again.
-      switchToLoginTab(saved.name, 'Unlock your wallet to continue.');
+    expired = Number.isFinite(expiresAt) && expiresAt <= Date.now();
+    const entry = _loadStore()[saved.name];
+    if (typeof saved.name !== 'string' || !entry
+        || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
+        || !/^[0-9a-f]{64}$/.test(privateKeyHex)
+        || !/^(02|03)[0-9a-f]{64}$/.test(publicKeyHex)
+        || saved.address !== entry.address || publicKeyHex !== entry.pubHex) {
+      throw new Error('invalid or expired session');
     }
-  } catch (_) {}
-  return false;
+    const privateKey = _hexToBytes(privateKeyHex);
+    S = {
+      name: saved.name,
+      address: saved.address,
+      privateKey,
+      publicKey: _hexToBytes(publicKeyHex),
+    };
+    afterLogin({ persist: false, expiresAt });
+    return true;
+  } catch (_) {
+    clearSessionRecord();
+    if (expired) {
+      setAlert('login-alert', 'Your one-hour session expired. Unlock your wallet to continue.', 'info');
+    }
+    return false;
+  }
 }
 
 // ============================================================
@@ -801,6 +830,7 @@ function afterLogin({ persist = true, expiresAt = null } = {}) {
   document.getElementById('hdr-wallet-addr').textContent = S.address;
   document.getElementById('dash-addr').textContent = S.address;
   document.getElementById('recv-addr').textContent  = S.address;
+  renderReceiveQr(S.address);
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   if (persist) persistSession();
   else scheduleSessionExpiry(expiresAt);
@@ -2970,7 +3000,187 @@ async function loadNodes() {
   } catch (_) {
     document.getElementById('chain-stats').textContent = 'Failed to load node info.';
   }
+  renderNetworkChart();
 }
+
+// ============================================================
+// SECTION 13a — Network difficulty chart + receive QR code
+// ============================================================
+function renderReceiveQr(address) {
+  const wrap = document.getElementById('recv-qr-wrap');
+  const holder = document.getElementById('recv-qr');
+  if (!wrap || !holder || !address) return;
+  holder.innerHTML = '';
+  if (typeof QRCode === 'undefined') { wrap.style.display = 'none'; return; }
+  try {
+    new QRCode(holder, {
+      text: address, width: 176, height: 176,
+      colorDark: '#0d0f14', colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    wrap.style.display = 'flex';
+  } catch (_) { wrap.style.display = 'none'; }
+}
+
+async function renderNetworkChart() {
+  const el = document.getElementById('net-chart');
+  if (!el) return;
+  let points;
+  try {
+    const data = await api('GET', '/network/history?limit=60');
+    points = Array.isArray(data.points) ? data.points : [];
+  } catch (_) {
+    el.innerHTML = '<div class="empty">Could not load network history.</div>';
+    return;
+  }
+  if (points.length < 2) {
+    el.innerHTML = '<div class="empty">Not enough blocks yet — mine a few to see the difficulty trend.</div>';
+    return;
+  }
+  const W = 700, H = 220, padL = 44, padR = 14, padT = 16, padB = 26;
+  const diffs = points.map(p => Number(p.difficulty) || 0);
+  let lo = Math.min(...diffs), hi = Math.max(...diffs);
+  if (hi - lo < 0.5) { const mid = (hi + lo) / 2; lo = mid - 0.25; hi = mid + 0.25; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  const x = i => padL + (i / (points.length - 1)) * (W - padL - padR);
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(diffs[i]).toFixed(1)}`).join(' ');
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${(H - padB).toFixed(1)} L${x(0).toFixed(1)},${(H - padB).toFixed(1)} Z`;
+  const gridY = [0, 0.5, 1].map(f => {
+    const v = lo + f * (hi - lo);
+    return `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
+      <text x="${padL - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="chart-axis-label">${escapeHtml(v.toFixed(2))}</text>`;
+  }).join('');
+  const first = points[0], last = points[points.length - 1];
+  el.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:220px" role="img" aria-label="Network difficulty over recent blocks">
+      <defs><linearGradient id="netfill" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32"/>
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+      </linearGradient></defs>
+      ${gridY}
+      <path d="${area}" fill="url(#netfill)"/>
+      <path d="${line}" fill="none" stroke="var(--accent2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:4px">
+      <span>Block ${escapeHtml(first.height)}</span>
+      <span>Difficulty ${escapeHtml(last.difficulty)} now &middot; ${escapeHtml(points.length)} blocks</span>
+      <span>Block ${escapeHtml(last.height)}</span>
+    </div>`;
+}
+
+// ============================================================
+// SECTION 13c — Block explorer
+// ============================================================
+function explorerTxLabel(type) {
+  return ({
+    token_create: 'Create token', token_mint: 'Mint token', token_transfer: 'Transfer token',
+    token_set_authority: 'Change DAD authority', token_pool_create: 'Create exchange pool',
+    token_pool_add_hlx: 'Add HLX liquidity', token_buy: 'Buy token', token_sell: 'Sell token',
+    token_swap: 'Swap tokens', token_burn: 'Burn token', transfer: 'HLX transfer',
+  })[type] || (type || 'transfer');
+}
+
+function explorerTxRow(tx) {
+  const isReward = tx.sender === 'SYSTEM';
+  const from = isReward ? 'Reward (SYSTEM)' : short(tx.sender);
+  return `<div class="tx-row" style="cursor:default">
+    <div class="tx-icon ${isReward ? 'sys' : 'out'}">${isReward ? '★' : '→'}</div>
+    <div class="tx-body">
+      <div class="tx-label">${escapeHtml(explorerTxLabel(tx.tx_type))}</div>
+      <div class="tx-sub">From: ${escapeHtml(from)}</div>
+      <div class="tx-sub">To:&nbsp;&nbsp;${escapeHtml(short(tx.receiver))}</div>
+    </div>
+    <div class="tx-right"><div class="tx-amount ${isReward ? 'sys' : 'out'}">${escapeHtml(tx.amount)}</div></div>
+  </div>`;
+}
+
+function renderExplorerBlock(block) {
+  const txs = Array.isArray(block.transactions) ? block.transactions : [];
+  return `<div class="card"><div class="card-title">Block ${escapeHtml(block.index)}</div>
+    <div class="detail-grid">
+      ${transactionDetailRow('Height', block.index)}
+      ${transactionDetailRow('Timestamp', fmtDate(block.timestamp))}
+      ${transactionDetailRow('Hash', block.hash)}
+      ${transactionDetailRow('Previous hash', block.previous_hash)}
+      ${transactionDetailRow('Transactions', txs.length)}
+    </div>
+    ${txs.length ? `<div class="tx-list" style="margin-top:14px">${txs.map(explorerTxRow).join('')}</div>` : ''}
+  </div>`;
+}
+
+function renderExplorerTx(data) {
+  return `<div class="card"><div class="card-title">Transaction</div>
+    <div class="detail-grid">
+      ${transactionDetailRow('ID', data.id || data.tx_id)}
+      ${transactionDetailRow('Type', explorerTxLabel(data.tx_type))}
+      ${transactionDetailRow('Block', data.block)}
+      ${transactionDetailRow('Timestamp', fmtDate(data.timestamp))}
+      ${transactionDetailRow('From', data.sender === 'SYSTEM' ? 'Reward (SYSTEM)' : data.sender)}
+      ${transactionDetailRow('To', data.receiver)}
+      ${transactionDetailRow('Amount', data.amount)}
+    </div></div>`;
+}
+
+function renderExplorerAddress(address, balance, txs) {
+  const rows = (txs || []).slice(0, 25);
+  return `<div class="card"><div class="card-title">Address</div>
+    <div class="detail-grid">
+      ${transactionDetailRow('Address', address)}
+      ${transactionDetailRow('HLX balance', balance)}
+      ${transactionDetailRow('Transactions', (txs || []).length)}
+    </div>
+    ${rows.length ? `<div class="tx-list" style="margin-top:14px">${rows.map(explorerTxRow).join('')}</div>` : '<p style="font-size:13px;color:var(--muted);margin-top:12px">No transactions for this address yet.</p>'}
+  </div>`;
+}
+
+async function runExplorerSearch() {
+  const input = document.getElementById('explorer-query');
+  const results = document.getElementById('explorer-results');
+  const raw = (input.value || '').trim();
+  setAlert('explorer-alert', '');
+  results.innerHTML = '';
+  if (!raw) { setAlert('explorer-alert', 'Enter a block height, hash, transaction ID, or address.'); return; }
+  const q = raw.toLowerCase();
+  results.innerHTML = '<div class="empty">Searching&hellip;</div>';
+  try {
+    if (/^\d+$/.test(raw)) {
+      const data = await api('GET', `/block/${raw}`);
+      if (!data.block) { results.innerHTML = ''; setAlert('explorer-alert', `No block at height ${escapeHtml(raw)}.`); return; }
+      results.innerHTML = renderExplorerBlock(data.block);
+    } else if (/^[0-9a-f]{64}$/.test(q)) {
+      const tx = await api('GET', `/transaction/${q}`).catch(() => ({}));
+      if (tx && (tx.id || tx.tx_id || tx.sender)) { results.innerHTML = renderExplorerTx(tx); return; }
+      // Not a transaction — maybe a block hash. Scan the chain.
+      const chain = await api('GET', '/chain').catch(() => ({}));
+      const list = (chain.chain || []);
+      const found = list.find(b => (b.hash || '').toLowerCase() === q);
+      if (found) {
+        const full = await api('GET', `/block/${found.index}`).catch(() => ({ block: found }));
+        results.innerHTML = renderExplorerBlock(full.block || found);
+      } else {
+        results.innerHTML = ''; setAlert('explorer-alert', 'No transaction or block found with that hash.');
+      }
+    } else if (/^[0-9a-f]{40}$/.test(q)) {
+      const [bal, hist] = await Promise.all([
+        api('GET', `/balance/${q}`).catch(() => ({})),
+        api('GET', `/history/${q}`).catch(() => ({})),
+      ]);
+      results.innerHTML = renderExplorerAddress(q, bal.balance ?? 0, hist.transactions || []);
+    } else {
+      results.innerHTML = '';
+      setAlert('explorer-alert', 'Not recognized. Use a block height (number), a 64-character hash/transaction ID, or a 40-character address.');
+    }
+  } catch (error) {
+    results.innerHTML = '';
+    setAlert('explorer-alert', error.message || 'Search failed.');
+  }
+}
+
+document.getElementById('btn-explorer-search')?.addEventListener('click', runExplorerSearch);
+document.getElementById('explorer-query')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') runExplorerSearch();
+});
 
 // ============================================================
 // SECTION 13b — Mining pools directory

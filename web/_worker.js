@@ -8,6 +8,8 @@ const PUBLIC_ROUTES = [
   ["GET", /^\/token\/[0-9a-f]{40}\/history\/[0-9a-f]{40}$/],
   ["GET", /^\/(?:balance|history)\/[0-9a-f]{40}$/],
   ["GET", /^\/transactions\/recent$/],
+  ["GET", /^\/network\/history$/],
+  ["GET", /^\/block\/\d+$/],
   ["GET", /^\/transaction\/[0-9a-f]{64}$/],
   ["GET", /^\/nodes\/audit\/cached$/],
   ["GET", /^\/pools$/],
@@ -39,8 +41,12 @@ function json(data, status = 200) {
   });
 }
 
+const DEFAULT_NODE_URL = "https://node.hlxchain.com";
+
 function nodeBases(rawValue) {
-  if (!rawValue) throw new Error("HELIX_NODE_URL is not configured");
+  // Fall back to the public seed node so a freshly forked wallet works with no
+  // configuration; set HELIX_NODE_URL to point at your own node instead.
+  if (!rawValue) rawValue = DEFAULT_NODE_URL;
   let values = rawValue;
   if (typeof rawValue === "string") {
     const trimmed = rawValue.trim();
@@ -98,11 +104,11 @@ export default {
     const isPublic = matches(PUBLIC_ROUTES, method, path);
     const isAdmin = matches(ADMIN_ROUTES, method, path);
     if (!isPublic && !isAdmin) {
-      return json({ message: "API route not available through the web_old gateway" }, 404);
+      return json({ message: "API route not available through the web gateway" }, 404);
     }
     if (isAdmin && env.HELIX_ENABLE_ADMIN_API !== "true") {
       return json({
-        message: "Administrative web_old routes are disabled. Set HELIX_ENABLE_ADMIN_API=true in Cloudflare Pages to enable them.",
+        message: "Administrative web routes are disabled. Set HELIX_ENABLE_ADMIN_API=true in Cloudflare Pages to enable them.",
       }, 403);
     }
 

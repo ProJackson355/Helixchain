@@ -13,11 +13,15 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -43,6 +47,7 @@ class InstallerApp:
         root.configure(bg=self.BG)
         self.log_queue: queue.Queue = queue.Queue()
         self.busy = False
+        self._tunnel_proc = None
 
         self._build()
         self.root.after(120, self._drain_log)
@@ -80,9 +85,12 @@ class InstallerApp:
 
         self._label(card, "Public URL — how others reach this node", optional=True)
         self.public_var = self._entry(card, "")
+        tk.Label(card, text="Free stable options (no domain): Oracle Cloud VM, Tailscale Funnel, or an ngrok static domain — see the Docs tab. Leave blank to auto-generate one below.",
+                 bg=self.CARD, fg=self.MUTED, font=("Segoe UI", 8), wraplength=540,
+                 justify="left").pack(anchor="w", pady=(0, 2))
 
         self._label(card, "Bootstrap nodes — comma-separated URLs to auto-connect", optional=True)
-        self.bootstrap_var = self._entry(card, "")
+        self.bootstrap_var = self._entry(card, "https://node.hlxchain.com")
 
         self._label(card, "Admin API key — protects mine/sync/discover", optional=True)
         key_row = tk.Frame(card, bg=self.CARD)
@@ -101,7 +109,7 @@ class InstallerApp:
                        activeforeground=self.TEXT, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 0))
 
         self.tunnel_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(card, text="Expose with a Cloudflare tunnel after starting (optional)",
+        tk.Checkbutton(card, text="Auto-generate a public URL (Cloudflare tunnel) and join the network (optional)",
                        variable=self.tunnel_var, bg=self.CARD, fg=self.TEXT,
                        selectcolor=self.BG, activebackground=self.CARD,
                        activeforeground=self.TEXT, font=("Segoe UI", 9)).pack(anchor="w")
@@ -178,6 +186,21 @@ class InstallerApp:
             if not self._install_deps(venv_python):
                 return
 
+            # Determine the node's public URL. A quick tunnel auto-generates one;
+            # otherwise use whatever stable URL the user entered (from a free
+            # option like Oracle Cloud, Tailscale Funnel, or an ngrok domain).
+            public_url = None
+            tunnel_url = None
+            if self.tunnel_var.get():
+                tunnel_url = self._start_tunnel_and_capture(port)
+                if tunnel_url:
+                    self._set_public_url(tunnel_url)
+                    public_url = tunnel_url
+            if not public_url:
+                manual = self.public_var.get().strip().rstrip("/")
+                if manual:
+                    public_url = manual
+
             self.log(f"[*] Starting the node on http://localhost:{port} …")
             env = os.environ.copy()
             env["NODE_PORT"] = port
@@ -187,12 +210,12 @@ class InstallerApp:
                 env["HELIX_REQUIRE_ADMIN_API_KEY"] = "true"
             self._popen([str(venv_python), "run_node.py"], env=env, new_console=True)
 
-            if self.tunnel_var.get():
-                if shutil.which("cloudflared"):
-                    self.log("[*] Opening a Cloudflare tunnel — copy the printed URL into Pages HELIX_NODE_URL.")
-                    self._popen(["cloudflared", "tunnel", "--url", f"http://localhost:{port}"], new_console=True)
-                else:
-                    self.log("[!] cloudflared not found — the node runs locally only. Install cloudflared to expose it.")
+            if tunnel_url:
+                self._copy_to_clipboard(tunnel_url)
+                self.log(f"[✓] Public node URL: {tunnel_url}  (copied to clipboard)")
+            if public_url:
+                # Give the node (and tunnel) a moment, then announce it to the network.
+                threading.Timer(8.0, lambda: self._register_with_bootstrap(public_url)).start()
 
             if self.open_ui_var.get():
                 threading.Timer(4.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
@@ -271,6 +294,81 @@ class InstallerApp:
         if new_console and os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
         subprocess.Popen(args, **kwargs)
+
+    def _start_tunnel_and_capture(self, port):
+        """Start a Cloudflare quick tunnel and read back its auto-generated
+        https://<name>.trycloudflare.com URL. Runs in the background and keeps
+        running after the installer closes."""
+        if not shutil.which("cloudflared"):
+            self.log("[!] cloudflared not found — install it to expose the node. Running locally only.")
+            self.log("    Download: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+            return None
+        log_path = os.path.join(tempfile.gettempdir(), "helix_tunnel.log")
+        self.log("[*] Starting a Cloudflare tunnel and generating a public URL …")
+        try:
+            log_file = open(log_path, "w", encoding="utf-8", errors="replace")
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            self._tunnel_proc = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
+                cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT, creationflags=flags,
+            )
+            log_file.close()  # the child keeps its own inherited handle
+        except Exception as exc:
+            self.log(f"[!] Could not start cloudflared: {exc}")
+            return None
+        pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+        deadline = time.time() + 45
+        while time.time() < deadline and self._tunnel_proc.poll() is None:
+            try:
+                text = open(log_path, "r", encoding="utf-8", errors="replace").read()
+            except OSError:
+                text = ""
+            match = pattern.search(text)
+            if match:
+                return match.group(0)
+            time.sleep(1)
+        self.log(f"[!] Tunnel URL not detected yet — it may still be starting. Check {log_path}")
+        return None
+
+    def _set_public_url(self, url):
+        try:
+            config = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
+        except (OSError, ValueError):
+            config = {}
+        config.setdefault("network", {})["public_url"] = url.rstrip("/")
+        try:
+            CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _register_with_bootstrap(self, node_url):
+        """Announce this node to the configured seed/bootstrap node(s) so it is
+        added as a peer and gossiped across the network (appears in the wallet)."""
+        seeds = [b.strip().rstrip("/") for b in self.bootstrap_var.get().split(",") if b.strip()]
+        if not seeds:
+            self.log("[i] No bootstrap/seed node set — node not auto-added to a network. "
+                     "Add one in the Bootstrap field, or submit your URL from the wallet's Nodes tab.")
+            return
+        payload = json.dumps({"node": node_url, "self_url": node_url}).encode()
+        for seed in seeds:
+            try:
+                request = urllib.request.Request(
+                    seed + "/nodes/register", data=payload,
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                urllib.request.urlopen(request, timeout=8)
+                self.log(f"[✓] Announced to {seed} — your node will appear as a peer across the network.")
+            except Exception as exc:
+                self.log(f"[!] Could not reach seed {seed}: {exc}")
+
+    def _copy_to_clipboard(self, text):
+        def do_copy():
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+            except Exception:
+                pass
+        self.root.after(0, do_copy)
 
 
 def main():
