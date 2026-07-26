@@ -558,6 +558,20 @@ function fmtDate(ts) {
   return ts ? new Date(ts * 1000).toLocaleString() : '';
 }
 
+// A transaction is treated as final once it is this many blocks deep.
+const CONFIRMATIONS_FINAL = 6;
+function confirmationsChip(n) {
+  n = Number(n) || 0;
+  if (n <= 0) return '<span style="color:var(--orange);font-size:11px">pending</span>';
+  if (n >= CONFIRMATIONS_FINAL) return '<span style="color:var(--green);font-size:11px">✓ final</span>';
+  return `<span style="color:var(--muted);font-size:11px">${n} conf${n === 1 ? '' : 's'}</span>`;
+}
+function confirmationsLabel(n) {
+  n = Number(n) || 0;
+  if (n <= 0) return 'pending';
+  return `${n} confirmation${n === 1 ? '' : 's'}${n >= CONFIRMATIONS_FINAL ? ' — final' : ` (final at ${CONFIRMATIONS_FINAL})`}`;
+}
+
 function transactionDetailRow(label, value, rawHtml = false) {
   const shown = value === null || value === undefined || value === '' ? '—' : value;
   return `<div class="detail-label">${escapeHtml(label)}</div><div class="detail-value">${rawHtml ? shown : escapeHtml(shown)}</div>`;
@@ -611,7 +625,7 @@ async function openTransactionDetails(txId) {
       ${transactionDetailRow('Sender', tx.sender)}
       ${transactionDetailRow('Receiver', tx.receiver)}
       ${transactionDetailRow('Block height', detail.block)}
-      ${transactionDetailRow('Confirmations', detail.confirmations)}
+      ${transactionDetailRow('Confirmations', confirmationsLabel(detail.confirmations))}
       ${transactionDetailRow('Timestamp', fmtDate(detail.timestamp))}
       ${transactionDetailRow('Block hash', detail.block_hash)}
       ${transactionDetailRow('Signature', tx.signature)}
@@ -664,7 +678,8 @@ function showPanel(name) {
   document.querySelectorAll('.nav-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.panel === name));
   if (name === 'dashboard') loadDashboard();
-  if (name === 'send')      loadPending();
+  if (name === 'send')      { loadPending(); renderContactOptions(); }
+  if (name === 'nft')       loadMyNfts();
   if (name === 'tokens')    loadTokens();
   if (name === 'history')   loadHistory();
   if (name === 'activity')  loadActivity(ACTIVITY_PAGE);
@@ -1047,6 +1062,7 @@ document.getElementById('btn-send').addEventListener('click', async () => {
 
     if (r.message === 'Transaction added') {
       setAlert('send-alert', `${symbol} transfer submitted successfully.`, 'ok');
+      watchForConfirmation(payload.tx_id, `${amount} ${symbol} to ${short(payload.receiver)} confirmed`);
       document.getElementById('send-to').value     = '';
       document.getElementById('send-amount').value = '';
       toast(`${symbol} transfer submitted`, 'ok');
@@ -2891,7 +2907,7 @@ function renderActivityTransactions(result) {
         <div class="tx-label">${escapeHtml(label)}</div>
         <div class="tx-sub">Block #${escapeHtml(tx.block)} Â· ${escapeHtml(short(tx.sender))} to ${escapeHtml(short(tx.receiver))}</div>
       </div>
-      <div class="tx-amount">${escapeHtml(amount)}</div>
+      <div class="tx-right" style="text-align:right"><div class="tx-amount">${escapeHtml(amount)}</div>${confirmationsChip(tx.confirmations)}</div>
     </div>`;
   }).join('')}</div>`;
 }
@@ -3007,18 +3023,29 @@ async function loadNodes() {
 // ============================================================
 // SECTION 13a — Network difficulty chart + receive QR code
 // ============================================================
+function receiveRequestUrl(address) {
+  const amtEl = document.getElementById('recv-amount');
+  const amt = amtEl ? amtEl.value.trim() : '';
+  let url = `${location.origin}/?to=${address}`;
+  if (amt && /^\d+(\.\d+)?$/.test(amt) && Number(amt) > 0) url += `&amount=${amt}`;
+  return url;
+}
+
 function renderReceiveQr(address) {
   const wrap = document.getElementById('recv-qr-wrap');
   const holder = document.getElementById('recv-qr');
   if (!wrap || !holder || !address) return;
+  const url = receiveRequestUrl(address);
+  const linkEl = document.getElementById('recv-link');
+  if (linkEl) linkEl.textContent = url;
   wrap.style.display = 'flex';   // always show the box so it never silently vanishes
   const unavailable = '<span style="color:#0d0f14;font:12px system-ui;display:block;padding:6px">QR code unavailable</span>';
   if (typeof qrcode === 'undefined') { holder.innerHTML = unavailable; return; }
   try {
     const qr = qrcode(0, 'M');       // auto-size, medium error correction
     // Encode a deep link so scanning opens the wallet on the Send tab with this
-    // address prefilled as the recipient (falls back to the site if not installed).
-    qr.addData(`${location.origin}/?to=${address}`);
+    // address (and any requested amount) prefilled — falls back to the site.
+    qr.addData(url);
     qr.make();
     holder.innerHTML = qr.createImgTag(5, 8);
     const img = holder.querySelector('img');
@@ -3274,13 +3301,19 @@ document.getElementById('pool-url').addEventListener('keydown', event => {
 // ============================================================
 // SECTION 14 — Startup
 // ============================================================
-// Deep link: /?to=<address> opens the Send tab with the recipient prefilled.
+// Deep link: /?to=<address>&amount=<n> opens Send with recipient (+amount) prefilled.
 let PENDING_SEND_TO = null;
+let PENDING_SEND_AMOUNT = null;
 
 function parseDeepLink() {
   try {
-    const to = new URLSearchParams(location.search).get('to');
-    if (to && /^[0-9a-f]{40}$/i.test(to)) PENDING_SEND_TO = to.toLowerCase();
+    const params = new URLSearchParams(location.search);
+    const to = params.get('to');
+    const amount = params.get('amount');
+    if (to && /^[0-9a-f]{40}$/i.test(to)) {
+      PENDING_SEND_TO = to.toLowerCase();
+      if (amount && /^\d+(\.\d+)?$/.test(amount) && Number(amount) > 0) PENDING_SEND_AMOUNT = amount;
+    }
     // Strip it from the URL so a later refresh doesn't reapply it.
     if (to && location.search) history.replaceState({}, '', location.pathname);
   } catch (_) {}
@@ -3289,15 +3322,284 @@ function parseDeepLink() {
 function applyPendingSendTo() {
   if (!PENDING_SEND_TO) return;
   const to = PENDING_SEND_TO; PENDING_SEND_TO = null;
+  const amt = PENDING_SEND_AMOUNT; PENDING_SEND_AMOUNT = null;
   showPanel('send');
   const asset = document.getElementById('send-asset');
   if (asset) { asset.value = 'HLX'; asset.dispatchEvent(new Event('change')); }
   const input = document.getElementById('send-to');
   if (input) input.value = to;
   const amount = document.getElementById('send-amount');
-  if (amount) amount.focus();
-  toast('Recipient filled from QR code', 'ok');
+  if (amount) {
+    if (amt) amount.value = amt;
+    amount.focus();
+  }
+  toast(amt ? `Payment request loaded: ${amt} HLX` : 'Recipient filled from QR code', 'ok');
 }
+
+// Regenerate the receive QR + link live as the requested amount changes.
+document.getElementById('recv-amount')?.addEventListener('input', () => {
+  if (typeof S !== 'undefined' && S) renderReceiveQr(S.address);
+});
+
+// ── Address book (stored locally, per-origin — non-custodial) ──
+const CONTACTS_KEY = 'hlx_contacts_v1';
+function loadContacts() {
+  try { const a = JSON.parse(localStorage.getItem(CONTACTS_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch (_) { return []; }
+}
+function saveContacts(list) {
+  try { localStorage.setItem(CONTACTS_KEY, JSON.stringify(list.slice(0, 200))); } catch (_) {}
+}
+function renderContactOptions() {
+  const sel = document.getElementById('send-contact');
+  if (!sel) return;
+  const contacts = loadContacts().sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  sel.innerHTML = '<option value="">— saved contacts —</option>' +
+    contacts.map(c => `<option value="${escapeHtml(c.address)}">${escapeHtml(c.label)} (${escapeHtml(short(c.address))})</option>`).join('');
+}
+document.getElementById('send-contact')?.addEventListener('change', event => {
+  if (event.target.value) {
+    const to = document.getElementById('send-to');
+    if (to) to.value = event.target.value;
+  }
+});
+document.getElementById('btn-save-contact')?.addEventListener('click', () => {
+  const to = (document.getElementById('send-to')?.value || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(to)) { setAlert('send-alert', 'Enter a valid 40-character address first.'); return; }
+  const label = (prompt('Name this contact:', '') || '').trim();
+  if (!label) return;
+  const list = loadContacts().filter(c => c.address !== to);
+  list.push({ label: label.slice(0, 40), address: to });
+  saveContacts(list); renderContactOptions();
+  toast('Contact saved', 'ok');
+});
+document.getElementById('btn-del-contact')?.addEventListener('click', () => {
+  const addr = document.getElementById('send-contact')?.value;
+  if (!addr) { setAlert('send-alert', 'Pick a saved contact to remove.'); return; }
+  saveContacts(loadContacts().filter(c => c.address !== addr)); renderContactOptions();
+  toast('Contact removed', 'ok');
+});
+
+// ── Tx-confirmed notifications (uses the PWA Notifications API) ──
+const WATCHED_TX = new Map();
+function requestNotifyPermission() {
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (_) {}
+}
+function watchForConfirmation(txid, body) {
+  if (!txid || !/^[0-9a-f]{64}$/i.test(txid)) return;
+  WATCHED_TX.set(txid, body || 'Your transaction confirmed');
+  requestNotifyPermission();
+}
+function notifyConfirmed(txid, body) {
+  toast('Transaction confirmed', 'ok');
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('Helix — transaction confirmed', { body, icon: '/icons/icon-192.png', tag: txid });
+    }
+  } catch (_) {}
+}
+async function checkConfirmations() {
+  if (!hasActiveSession() || WATCHED_TX.size === 0) return;
+  for (const [txid, body] of [...WATCHED_TX]) {
+    try {
+      const d = await api('GET', `/transaction/${txid}`);
+      if (d && (d.status === 'confirmed' || Number(d.confirmations) >= 1)) {
+        notifyConfirmed(txid, body);
+        WATCHED_TX.delete(txid);
+      }
+    } catch (_) { /* still pending or node unreachable */ }
+  }
+}
+setInterval(checkConfirmations, 20000);
+
+// ── In-app QR scanner (camera → decode → fill Send) ──
+let SCAN_STREAM = null;
+let SCAN_RAF = null;
+let JSQR_LOADING = null;
+function loadJsQR() {
+  if (typeof jsQR !== 'undefined') return Promise.resolve();
+  if (JSQR_LOADING) return JSQR_LOADING;
+  JSQR_LOADING = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/jsqr.js?v=1';
+    s.onload = resolve;
+    s.onerror = () => { JSQR_LOADING = null; reject(new Error('scanner load failed')); };
+    document.head.appendChild(s);
+  });
+  return JSQR_LOADING;
+}
+function applyScannedValue(text) {
+  let to = '', amount = '';
+  try { const u = new URL(text); to = (u.searchParams.get('to') || '').toLowerCase(); amount = u.searchParams.get('amount') || ''; }
+  catch (_) { to = (text || '').trim().toLowerCase(); }
+  if (!/^[0-9a-f]{40}$/.test(to)) { setAlert('scan-alert', 'That QR code is not a Helix address.'); return false; }
+  const input = document.getElementById('send-to'); if (input) input.value = to;
+  if (amount && /^\d+(\.\d+)?$/.test(amount) && Number(amount) > 0) {
+    const amt = document.getElementById('send-amount'); if (amt) amt.value = amount;
+  }
+  return true;
+}
+function scanTick() {
+  const video = document.getElementById('scan-video');
+  if (!SCAN_STREAM || !video || video.readyState !== video.HAVE_ENOUGH_DATA) {
+    SCAN_RAF = requestAnimationFrame(scanTick); return;
+  }
+  const canvas = scanTick._canvas || (scanTick._canvas = document.createElement('canvas'));
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  let code = null;
+  try {
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+  } catch (_) {}
+  if (code && code.data && applyScannedValue(code.data)) { toast('Address filled from scan', 'ok'); closeScanner(); return; }
+  SCAN_RAF = requestAnimationFrame(scanTick);
+}
+async function openScanner() {
+  const modal = document.getElementById('scan-modal');
+  setAlert('scan-alert', '');
+  modal.classList.add('open'); modal.setAttribute('aria-hidden', 'false');
+  try { await loadJsQR(); } catch (_) { setAlert('scan-alert', 'Could not load the scanner.'); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setAlert('scan-alert', 'Camera is not available in this browser.'); return;
+  }
+  try { SCAN_STREAM = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); }
+  catch (_) { setAlert('scan-alert', 'Camera permission was denied or no camera is available.'); return; }
+  const video = document.getElementById('scan-video');
+  video.srcObject = SCAN_STREAM;
+  await video.play().catch(() => {});
+  SCAN_RAF = requestAnimationFrame(scanTick);
+}
+function closeScanner() {
+  const modal = document.getElementById('scan-modal');
+  if (modal) { modal.classList.remove('open'); modal.setAttribute('aria-hidden', 'true'); }
+  if (SCAN_RAF) { cancelAnimationFrame(SCAN_RAF); SCAN_RAF = null; }
+  if (SCAN_STREAM) { SCAN_STREAM.getTracks().forEach(t => t.stop()); SCAN_STREAM = null; }
+  const video = document.getElementById('scan-video'); if (video) video.srcObject = null;
+}
+document.getElementById('btn-scan-qr')?.addEventListener('click', openScanner);
+document.getElementById('btn-close-scan')?.addEventListener('click', closeScanner);
+document.getElementById('scan-modal')?.addEventListener('click', e => { if (e.target.id === 'scan-modal') closeScanner(); });
+
+// ── NFTs (ERC-721-style: unique id + explicit owner) ──
+async function nftAddress(creator, nonce) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`helix-nft:${creator}:${nonce}`));
+  return _bytesToHex(new Uint8Array(digest)).slice(0, 40);
+}
+function nftAddAttrRow() {
+  const wrap = document.getElementById('nft-attrs');
+  if (!wrap) return;
+  const row = document.createElement('div');
+  row.className = 'nft-attr-row';
+  row.style.cssText = 'display:flex;gap:8px;margin-bottom:6px';
+  row.innerHTML = '<input class="nft-attr-trait" placeholder="Trait (e.g. Color)" maxlength="40" style="flex:1" autocomplete="off">'
+    + '<input class="nft-attr-value" placeholder="Value (e.g. Blue)" maxlength="80" style="flex:1" autocomplete="off">'
+    + '<button class="btn btn-ghost btn-sm nft-attr-del" type="button" title="Remove trait">🗑</button>';
+  row.querySelector('.nft-attr-del').addEventListener('click', () => row.remove());
+  wrap.appendChild(row);
+}
+function collectNftAttributes() {
+  const attrs = [];
+  document.querySelectorAll('#nft-attrs .nft-attr-row').forEach(row => {
+    const trait = row.querySelector('.nft-attr-trait').value.trim();
+    const value = row.querySelector('.nft-attr-value').value.trim();
+    if (trait && value) attrs.push({ trait_type: trait, value });
+  });
+  return attrs;
+}
+function renderNftCard(nft, owned) {
+  const attrs = Array.isArray(nft.attributes) ? nft.attributes : [];
+  const traits = attrs.map(a =>
+    `<span style="display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:2px 7px;margin:2px 4px 2px 0;font-size:11px"><span style="color:var(--muted)">${escapeHtml(a.trait_type)}:</span> ${escapeHtml(a.value)}</span>`).join('');
+  const royalty = Number(nft.royalty_bps || 0) / 100;
+  return `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;gap:14px;align-items:flex-start">
+      <img src="${escapeHtml(nft.image)}" alt="${escapeHtml(nft.name)}" style="width:88px;height:88px;border-radius:10px;object-fit:cover;background:var(--surface2);flex-shrink:0">
+      <div style="min-width:0;flex:1">
+        <div style="font-weight:700">${escapeHtml(nft.name)}</div>
+        <div style="font-size:12px;color:var(--muted);overflow-wrap:anywhere">${escapeHtml(nft.description)}</div>
+        <div style="margin-top:6px">${traits}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">ID ${escapeHtml(short(nft.nft_id))} &middot; royalty ${escapeHtml(royalty)}% &middot; owner ${escapeHtml(short(nft.owner))}</div>
+      </div>
+    </div>
+    ${owned ? `<button class="btn btn-ghost btn-sm" type="button" data-nft-transfer="${escapeHtml(nft.nft_id)}" style="margin-top:10px">Transfer</button>` : ''}
+  </div>`;
+}
+async function loadMyNfts() {
+  const gallery = document.getElementById('nft-gallery');
+  if (!gallery || !hasActiveSession()) return;
+  gallery.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const data = await api('GET', `/nfts/owner/${S.address}`);
+    const nfts = data.nfts || [];
+    gallery.innerHTML = nfts.length ? nfts.map(n => renderNftCard(n, true)).join('')
+      : '<div class="empty">You don\'t own any NFTs yet — create one above.</div>';
+  } catch (_) { gallery.innerHTML = '<div class="empty">Could not load your NFTs.</div>'; }
+}
+document.getElementById('btn-nft-add-attr')?.addEventListener('click', nftAddAttrRow);
+document.getElementById('btn-nft-refresh')?.addEventListener('click', loadMyNfts);
+document.getElementById('nft-gallery')?.addEventListener('click', async event => {
+  const btn = event.target.closest('[data-nft-transfer]');
+  if (!btn || !hasActiveSession()) return;
+  const nftId = btn.dataset.nftTransfer;
+  const to = (prompt('Send this NFT to which address? (40 hex characters)') || '').trim().toLowerCase();
+  if (!to) return;
+  if (!/^[0-9a-f]{40}$/.test(to)) { toast('Invalid recipient address', 'err'); return; }
+  try {
+    const payload = { tx_type: 'nft_transfer', sender: S.address, receiver: to, amount: 0, nft_id: nftId, nonce: _hexRandom(16) };
+    payload.signature = await signPayload(S.privateKey, payload);
+    payload.public_key = await exportPublicKeyPEM(S.publicKey);
+    const result = await api('POST', '/transaction', payload);
+    if (result.message !== 'Transaction added') throw new Error(result.message || 'Transfer rejected.');
+    watchForConfirmation(result.tx_id, 'Your NFT transfer confirmed');
+    toast('NFT transfer submitted', 'ok');
+  } catch (error) { toast(error.message || 'Transfer failed', 'err'); }
+});
+document.getElementById('btn-nft-create')?.addEventListener('click', async () => {
+  if (!hasActiveSession()) return;
+  const btn = document.getElementById('btn-nft-create');
+  setAlert('nft-create-alert', '');
+  const name = document.getElementById('nft-name').value.trim();
+  const description = document.getElementById('nft-description').value.trim();
+  const image = document.getElementById('nft-image').value.trim();
+  const royaltyPct = document.getElementById('nft-royalty').value.trim();
+  try {
+    if (name.length < 1 || name.length > 64) throw new Error('Name must be 1 to 64 characters.');
+    if (description.length < 1 || description.length > 1000) throw new Error('Description must be 1 to 1000 characters.');
+    let imageUrl;
+    try { imageUrl = new URL(image); } catch (_) { throw new Error('Image must be a valid URL.'); }
+    if (imageUrl.protocol !== 'https:') throw new Error('Image URL must use HTTPS.');
+    let royaltyBps = 0;
+    if (royaltyPct) {
+      const pct = Number(royaltyPct);
+      if (!(pct >= 0 && pct <= 100)) throw new Error('Royalty must be between 0 and 100%.');
+      royaltyBps = Math.round(pct * 100);
+    }
+    const attributes = collectNftAttributes();
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Signing&hellip;';
+    const metadata_hash = await tokenMetadataHash({ name, description, image, attributes });
+    const nonce = _hexRandom(16);
+    const nft_id = await nftAddress(S.address, nonce);
+    const payload = {
+      tx_type: 'nft_mint', sender: S.address, receiver: S.address, amount: 0,
+      nft_id, nonce, name, description, image, uri: image, metadata_hash,
+      attributes, royalty_bps: royaltyBps,
+    };
+    payload.signature = await signPayload(S.privateKey, payload);
+    payload.public_key = await exportPublicKeyPEM(S.publicKey);
+    btn.innerHTML = '<span class="spinner"></span> Submitting&hellip;';
+    const result = await api('POST', '/transaction', payload);
+    if (result.message !== 'Transaction added') throw new Error(result.message || 'NFT creation was rejected.');
+    watchForConfirmation(result.tx_id, `NFT "${name}" minted`);
+    setAlert('nft-create-alert', `NFT submitted. Mine a block to confirm it.\nID: ${nft_id}`, 'ok');
+    toast('NFT submitted', 'ok');
+    ['nft-name', 'nft-description', 'nft-image', 'nft-royalty'].forEach(id => { document.getElementById(id).value = ''; });
+    document.getElementById('nft-attrs').innerHTML = '';
+  } catch (error) {
+    setAlert('nft-create-alert', error.message || 'Could not create NFT.');
+  } finally { btn.disabled = false; btn.textContent = 'Create NFT'; }
+});
 
 (async () => {
   document.getElementById('node-banner').style.display = 'flex';

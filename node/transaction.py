@@ -20,7 +20,10 @@ class Transaction:
         "token_create", "token_mint", "token_burn", "token_transfer", "token_set_authority",
         "token_pool_create", "token_pool_add_hlx", "token_buy", "token_sell", "token_swap",
     }
-    ZERO_AMOUNT_TYPES = {"token_create", "token_set_authority"}
+    # ERC-721-style non-fungible tokens: each is a unique asset with an explicit
+    # owner (not a fungible balance). Minted by a creator, transferred by the owner.
+    NFT_TYPES = {"nft_mint", "nft_transfer"}
+    ZERO_AMOUNT_TYPES = {"token_create", "token_set_authority", "nft_mint", "nft_transfer"}
 
     def __init__(
         self,
@@ -44,6 +47,9 @@ class Transaction:
         hlx_amount: int | None = None,
         min_receive: int | None = None,
         target_mint_address: str | None = None,
+        nft_id: str | None = None,
+        attributes: list | None = None,
+        royalty_bps: int | None = None,
     ):
         if isinstance(amount, bool):
             raise ValueError("amount must be an integer")
@@ -110,6 +116,9 @@ class Transaction:
         self.hlx_amount = optional_integer(hlx_amount, "hlx_amount")
         self.min_receive = optional_integer(min_receive, "min_receive")
         self.target_mint_address = target_mint_address
+        self.nft_id = nft_id
+        self.attributes = attributes if isinstance(attributes, list) else None
+        self.royalty_bps = optional_integer(royalty_bps, "royalty_bps")
         self.public_key = public_key
         self.signature = None
         self.tx_id = None
@@ -121,11 +130,27 @@ class Transaction:
             "receiver": self.receiver,
             "amount": self.serialized_amount(self.amount),
         }
-        if self.tx_type != "transfer":
+        if self.tx_type != "transfer" and self.tx_type not in self.NFT_TYPES:
             payload.update({
                 "tx_type": self.tx_type,
                 "mint_address": self.mint_address,
                 "nonce": self.nonce,
+            })
+        if self.tx_type in self.NFT_TYPES:
+            payload.update({
+                "tx_type": self.tx_type,
+                "nft_id": self.nft_id,
+                "nonce": self.nonce,
+            })
+        if self.tx_type == "nft_mint":
+            payload.update({
+                "name": self.name,
+                "description": self.description,
+                "image": self.image,
+                "uri": self.uri or "",
+                "metadata_hash": self.metadata_hash,
+                "attributes": self.attributes or [],
+                "royalty_bps": self.royalty_bps or 0,
             })
         if self.tx_type == "token_create":
             payload.update({
@@ -179,6 +204,24 @@ class Transaction:
         encoded = json.dumps(
             metadata, sort_keys=True, separators=(",", ":")
         ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def nft_address(creator: str, nonce: str) -> str:
+        """Deterministic unique ID for a minted NFT (like an ERC-721 token id)."""
+        return hashlib.sha256(
+            f"helix-nft:{creator}:{nonce}".encode()
+        ).hexdigest()[:40]
+
+    @staticmethod
+    def nft_metadata_hash(name, description, image, attributes) -> str:
+        metadata = {
+            "name": name,
+            "description": description,
+            "image": image,
+            "attributes": attributes or [],
+        }
+        encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
     def calculate_id(self) -> str:
@@ -282,11 +325,27 @@ class Transaction:
         }
         # Keep legacy transfers and mining rewards byte-for-byte compatible
         # with existing block hashes. Token fields exist only on token records.
-        if self.tx_type != "transfer":
+        if self.tx_type != "transfer" and self.tx_type not in self.NFT_TYPES:
             data.update({
                 "tx_type": self.tx_type,
                 "mint_address": self.mint_address,
                 "nonce": self.nonce,
+            })
+        if self.tx_type in self.NFT_TYPES:
+            data.update({
+                "tx_type": self.tx_type,
+                "nft_id": self.nft_id,
+                "nonce": self.nonce,
+            })
+        if self.tx_type == "nft_mint":
+            data.update({
+                "name": self.name,
+                "description": self.description,
+                "image": self.image,
+                "uri": self.uri or "",
+                "metadata_hash": self.metadata_hash,
+                "attributes": self.attributes or [],
+                "royalty_bps": self.royalty_bps or 0,
             })
         if self.tx_type == "token_create":
             data.update({

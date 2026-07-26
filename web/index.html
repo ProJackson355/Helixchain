@@ -13,6 +13,15 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Helix" />
+  <!-- Open Graph / link preview (Worker rewrites title+description for /?to= payment links) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Helix Wallet" />
+  <meta property="og:title" content="Helix Wallet" />
+  <meta property="og:description" content="Non-custodial wallet for the Helix blockchain." />
+  <meta property="og:image" content="https://wallet.hlxchain.com/icons/icon-512.png" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Helix Wallet" />
+  <meta name="twitter:description" content="Non-custodial wallet for the Helix blockchain." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -48,6 +57,19 @@
       padding: 16px 32px; background: linear-gradient(180deg, #171b24, #12151c);
       border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
       box-shadow: 0 1px 0 #ffffff08, 0 10px 26px -20px #000;
+    }
+    /* Installed PWA only: translucent status bar means content sits under the
+       notch / Dynamic Island, so pad the header (and nav panel) down. The browser
+       is display-mode:browser and is left exactly as it was. */
+    @media (display-mode: standalone) {
+      /* Whichever element is at the very top (banner when disconnected, header
+         otherwise) drops below the notch / Dynamic Island. */
+      #node-banner { padding-top: calc(10px + env(safe-area-inset-top)); }
+      #node-banner + #app > header { padding-top: 16px; }  /* avoid a double gap when the banner shows */
+      header { padding-top: calc(16px + env(safe-area-inset-top)); }
+    }
+    @media (display-mode: standalone) and (max-width: 700px) {
+      #main-nav { padding-top: calc(18px + env(safe-area-inset-top)); }
     }
     .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; }
     .logo-hex {
@@ -515,6 +537,7 @@
     <button class="nav-btn active" data-panel="dashboard">Dashboard</button>
     <button class="nav-btn" data-panel="send">Send</button>
     <button class="nav-btn" data-panel="tokens">Tokens</button>
+    <button class="nav-btn" data-panel="nft">NFTs</button>
     <button class="nav-btn" data-panel="history">History</button>
     <button class="nav-btn" data-panel="activity">Activity</button>
     <button class="nav-btn" data-panel="nodes">Nodes</button>
@@ -720,6 +743,12 @@
     <div class="field">
       <label>Recipient Address (40 hex characters)</label>
       <input id="send-to" type="text" placeholder="a1b2c3…" autocomplete="off" />
+      <button class="btn btn-ghost btn-sm" id="btn-scan-qr" type="button" style="margin-top:8px">📷&nbsp; Scan a QR code</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <select id="send-contact" style="flex:1"><option value="">— saved contacts —</option></select>
+        <button class="btn btn-ghost btn-sm" id="btn-save-contact" type="button" title="Save the recipient above as a contact">Save</button>
+        <button class="btn btn-ghost btn-sm" id="btn-del-contact" type="button" title="Remove the selected contact">🗑</button>
+      </div>
     </div>
     <div class="field">
       <label id="send-amount-label">Amount (HLX)</label>
@@ -736,6 +765,15 @@
     </div>
     <div id="recv-qr-wrap" style="display:none;justify-content:center;margin-top:16px">
       <div id="recv-qr" style="background:#fff;padding:12px;border-radius:12px;line-height:0"></div>
+    </div>
+    <div class="field" style="margin-top:16px;margin-bottom:0">
+      <label>Request a specific amount (optional)</label>
+      <input id="recv-amount" inputmode="decimal" placeholder="0" autocomplete="off" />
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:10px 0 4px">Share this payment link — it opens the wallet with the recipient (and amount) filled in:</p>
+    <div class="addr-row">
+      <span id="recv-link" style="flex:1;font-size:12px">—</span>
+      <button class="copy-btn" data-copy-id="recv-link">Copy link</button>
     </div>
   </div>
   <div class="card">
@@ -903,6 +941,31 @@
 </div>
 
 <!-- DOCS -->
+<div id="panel-nft" class="panel">
+  <div class="card">
+    <div class="card-title">Create an NFT</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Mint a unique, one-of-a-kind NFT that you own on-chain. The image is hosted at an HTTPS URL; its details (and a content hash) are recorded on the blockchain.</p>
+    <div id="nft-create-alert"></div>
+    <div class="field"><label>Name</label><input id="nft-name" maxlength="64" placeholder="My artwork" autocomplete="off" /></div>
+    <div class="field"><label>Description</label><textarea id="nft-description" maxlength="1000" placeholder="What is this NFT?"></textarea></div>
+    <div class="field"><label>Image URL (HTTPS)</label><input id="nft-image" placeholder="https://…/image.png" autocomplete="off" /></div>
+    <div class="field"><label>Creator royalty % (0–100, optional)</label><input id="nft-royalty" inputmode="decimal" placeholder="0" /></div>
+    <div class="field">
+      <label>Traits (optional)</label>
+      <div id="nft-attrs"></div>
+      <button class="btn btn-ghost btn-sm" id="btn-nft-add-attr" type="button" style="margin-top:6px">+ Add trait</button>
+    </div>
+    <button class="btn btn-primary btn-full" id="btn-nft-create" type="button">Create NFT</button>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">My NFTs</div>
+      <button class="btn btn-ghost btn-sm" id="btn-nft-refresh" type="button">↻ Refresh</button>
+    </div>
+    <div id="nft-gallery"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+
 <div id="panel-explorer" class="panel">
   <div class="card">
     <div class="card-title">Block Explorer</div>
@@ -934,7 +997,7 @@
       <div class="card-title">How the blockchain works</div>
       <p><strong>Blocks and the chain.</strong> The chain starts with a fixed, empty genesis block. Every block after it holds a list of transactions plus exactly one mining reward, is identified by its SHA-256 hash, and points back to its parent by that parent's hash. Change anything in a block and its hash changes, which breaks every block after it — that is what makes the history tamper-evident.</p>
       <p><strong>Proof of work and difficulty.</strong> A block is only valid if its hash, read as a number, is less than or equal to the current <strong>target</strong>: <code>int(hash, 16) &le; target</code>. Miners repeatedly change a nonce until the hash falls under the target. A smaller target is harder to hit. Helix uses a fine-grained target, so difficulty is continuous rather than jumping in 16&times; steps: <code>difficulty = 64 &minus; log16(target + 1)</code>, and it can be fractional. The chain seeds at difficulty <strong>5.5</strong> from block&nbsp;1 and retargets every 10 blocks toward a <strong>10-minute</strong> average block time. The size of each adjustment scales with how far the recent average was from target — a run of very fast blocks hardens far more than blocks that were only slightly quick — bounded to a large-but-finite move per window, with no upper cap and a floor at the minimum difficulty.</p>
-      <p><strong>Transactions.</strong> Transactions are signed with secp256k1 keys that live only in your browser (the network is non-custodial — no server holds your keys). Besides a plain HLX transfer, transactions can create a token, mint, transfer, change a token's DAD authority, create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn. A submitted transaction sits in the mempool as <strong>pending</strong> until a miner includes it in a block.</p>
+      <p><strong>Transactions.</strong> Transactions are signed with secp256k1 keys that live only in your browser (the network is non-custodial — no server holds your keys). Besides a plain HLX transfer, transactions can create a token, mint, transfer, change a token's DAD authority, create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn, and can <strong>mint or transfer a one-of-a-kind NFT</strong>. A submitted transaction sits in the mempool as <strong>pending</strong> until a miner includes it in a block.</p>
       <p><strong>Mining and rewards.</strong> Mining happens on the miner's own hardware, not the node: a miner pulls a work template (<code>/mining/work</code>), hashes it locally on CPU, GPU, or through a pool, and submits the solved block (<code>/mining/submit</code>). Each valid block pays its miner a single <code>SYSTEM</code> reward transaction — this is the <em>only</em> way new HLX is created, and never beyond the fixed maximum supply.</p>
       <p><strong>Which chain is real (consensus).</strong> Nodes always follow the chain with the most <strong>accumulated proof-of-work</strong> (<code>chain_work</code>), not merely the longest. If two miners find a block at the same height at once, the network briefly splits and each node keeps the block it saw first. Nothing settles until the next block is mined: whichever branch it extends gains more work, and every node reorganizes onto that heavier branch. The abandoned block becomes an <strong>orphan</strong> — its ordinary transactions go back to the mempool to be mined again, and its reward is discarded, so only the winning miner is paid. Configured <strong>checkpoints</strong> stop any reorg from rewriting history past a fixed point.</p>
       <p><strong>Networking.</strong> Nodes talk over plain HTTP. A new node joins by contacting a bootstrap <strong>seed</strong>, then learns about everyone else through peer gossip. Every 30 seconds each node discovers peers, pulls the heaviest chain it can find, and re-audits every block's hash.</p>
@@ -948,6 +1011,13 @@
         <li>Use <strong>Send</strong> to choose HLX or a held custom token, enter the recipient address and amount, then submit the signed transaction.</li>
         <li>A submitted transaction stays pending until a miner confirms it. Its sender may cancel it from Send while it is still pending.</li>
         <li><strong>History</strong> shows this wallet's transactions. <strong>Activity</strong> shows confirmed transactions from every wallet, newest first.</li>
+        <li><strong>Confirmations.</strong> Once a transaction is mined, the wallet shows how many blocks have been built on top of it — its confirmation depth. More confirmations mean the transaction is buried deeper and harder to reverse; a payment is treated as final after enough blocks follow it.</li>
+        <li><strong>Get paid with a QR code or link.</strong> Your <strong>Receive</strong> view shows a QR code of your address, and you can attach an amount to generate a <strong>payment-request</strong> QR and a shareable link. Whoever opens the link or scans the code lands in Send with the recipient and amount already filled in.</li>
+        <li><strong>Scan to send.</strong> On the <strong>Send</strong> screen, tap <strong>📷 Scan a QR code</strong> to read a plain address or a payment-request code with your camera and auto-fill the recipient (and amount). Camera access needs HTTPS or localhost.</li>
+        <li><strong>Address book.</strong> Save the people you pay as named contacts and pick them from a dropdown on Send instead of pasting a 40-character address each time.</li>
+        <li><strong>Desktop notifications.</strong> Opt in and the wallet notifies you when one of your pending transactions confirms, so you don't have to watch the History list.</li>
+        <li><strong>Install it as an app.</strong> Helix is a progressive web app — install it from your browser (desktop or mobile) for a full-screen, offline-capable wallet that launches from your home screen or dock.</li>
+        <li><strong>Explorer.</strong> The Explorer tab lets you browse blocks and look up any transaction or address on the chain, and the Nodes tab charts network difficulty over time.</li>
         <li><strong>Backup &amp; Restore:</strong> from the Dashboard you can download an encrypted backup file of your wallet, and restore it later from the <strong>Recover</strong> screen. Your seed phrase or a backup file is the only way to regain access on another device or browser.</li>
       </ol>
       <div class="alert alert-warn">Never share a recovery phrase, private key, wallet password, wallet backup file, or node admin API key.</div>
@@ -964,6 +1034,19 @@
         <li>The dedicated <strong>Swap</strong> tab atomically trades one token for another, routed through both tokens' HLX pools. Quotes include both 0.3% pool fees, and a 1% slippage guard protects each trade.</li>
         <li>Token price uses OHLC candlesticks. Choose the candle interval — <strong>Minute, Hour, Day, Month, or Auto</strong> — and set exactly when the chart starts with the <strong>Start</strong> date-and-time picker. Cropping the start rescales the vertical axis so small values stay readable next to large ones. Drag to pan, scroll to zoom, drag the corner to resize, and double-click to reset. Rising candles are green and falling candles are red.</li>
       </ol>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">NFTs</div>
+      <p>An <strong>NFT</strong> (non-fungible token) is a one-of-a-kind item recorded on the chain. Unlike HLX or a custom token — where every unit is interchangeable and you hold a <em>balance</em> — each NFT has a unique id and a single explicit <strong>owner</strong>, so ownership can be proven and handed to someone else but never split or duplicated.</p>
+      <ol>
+        <li><strong>Create one.</strong> Open the <strong>NFTs</strong> tab and fill in a name, description, and an <strong>HTTPS image URL</strong>. Optionally add <strong>traits</strong> (trait/value pairs such as Color / Blue) and a <strong>creator royalty</strong> percentage. Submitting mints the NFT to you; it confirms once a block is mined.</li>
+        <li><strong>What's stored on-chain.</strong> The name, description, image link, and traits are recorded, and a SHA-256 <strong>content hash</strong> of that metadata is signed into the mint — so anyone can verify the details were never altered after minting. The image file itself lives at the URL you provide, not in the block.</li>
+        <li><strong>My NFTs.</strong> The tab shows a gallery of every NFT you currently own, each with its image, traits, id, royalty, and a <strong>Transfer</strong> button.</li>
+        <li><strong>Transfer.</strong> Only the current owner can move an NFT. A transfer is a straight handoff of ownership to another address for no HLX — the chain simply records the new owner. Forged ids, tampered metadata, and transferring an NFT you don't own are all rejected by every node.</li>
+        <li><strong>Royalties.</strong> The creator royalty is stored on every NFT so a future marketplace can pay the original creator a cut of each sale automatically.</li>
+      </ol>
+      <div class="alert alert-info">Today NFTs can be minted and transferred; there is no on-chain <em>price</em> yet. A transfer is an ownership handoff, so any payment is arranged off-chain. A trustless marketplace — list an NFT and trade it atomically for HLX, a token, or another NFT, with royalties enforced — is planned as the next step. NFT support is a consensus feature, so every node must run the updated build.</div>
     </section>
 
     <section class="card docs-section">
@@ -1055,6 +1138,9 @@
         <li>Maximum native supply: 20,000,000 HLX.</li>
         <li>Atomic token swaps activated at block 200 (protocol 10). Token-to-token trades route through both HLX pools.</li>
         <li>The DAD token-burn feature requires every node to run the updated build; nodes on older code reject <code>token_burn</code> transactions, so upgrade all nodes together before relying on it.</li>
+        <li>NFT mint and transfer are consensus transactions: nodes on older code reject them, so upgrade every node together before relying on NFTs.</li>
+        <li>Block timestamps must not run backward past their parent by more than a small tolerance (and still may not be far in the future). This lets fast, low-difficulty blocks that share a clock tick — or miners that stamp whole seconds — be accepted instead of wrongly rejected as "another miner won." It is a consensus rule, so update every node together.</li>
+        <li>Auto-checkpoints: the node periodically records a checkpoint at a safely buried height so deep history can't be reorganized, hardening the chain against long-range rewrites without manual configuration.</li>
         <li>At block 300, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> becomes the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
         <li>Before upgrading or copying chain data, stop the node and back up its database.</li>
         <li>Use <code>python helixctl.py validate</code> to verify the local chain.</li>
@@ -1147,12 +1233,25 @@
     <div class="modal-body" id="tx-modal-body"><div class="empty">Loading&hellip;</div></div>
   </div>
 </div>
+<div id="scan-modal" class="modal-backdrop" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" style="width:min(400px,100%)">
+    <div class="modal-head">
+      <h2>Scan a QR code</h2>
+      <button type="button" class="btn btn-ghost modal-close" id="btn-close-scan" aria-label="Close scanner">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Point your camera at a Helix receive or payment QR code.</p>
+      <video id="scan-video" playsinline muted style="width:100%;border-radius:12px;background:#000;aspect-ratio:1/1;object-fit:cover"></video>
+      <div id="scan-alert" style="margin-top:10px"></div>
+    </div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <!-- Self-hosted QR generator (no external CDN dependency). -->
 <script src="/qrcode.js?v=1" defer></script>
 <!-- Bump the ?v= version whenever app.js changes so browsers don't serve a stale cached copy. -->
-<script src="/app.js?v=20260727" defer></script>
+<script src="/app.js?v=20260730" defer></script>
 <script src="/pwa.js?v=1" defer></script>
 </body>
 </html>

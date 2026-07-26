@@ -1,6 +1,9 @@
 const PUBLIC_ROUTES = [
   ["GET", /^\/(?:chain|pending|nodes|stats|health)$/],
   ["GET", /^\/tokens$/],
+  ["GET", /^\/nfts$/],
+  ["GET", /^\/nft\/[0-9a-f]{40}$/],
+  ["GET", /^\/nfts\/owner\/[0-9a-f]{40}$/],
   ["GET", /^\/token\/[0-9a-f]{40}$/],
   ["GET", /^\/token\/[0-9a-f]{40}\/market\/history$/],
   ["GET", /^\/dad\/[0-9a-f]{40}\/tokens$/],
@@ -92,10 +95,49 @@ function upstreamUrl(rawBase, path, search) {
   return target;
 }
 
+const CANONICAL_HOST = "wallet.hlxchain.com";
+// Alternate hostnames that should permanently redirect to the canonical wallet
+// domain. Preview deployments (random-hash.helixwallet.pages.dev) are left alone
+// so they stay testable.
+const REDIRECT_HOSTS = new Set([
+  "helixwallet.pages.dev",
+  "hlxchain.com",
+  "www.hlxchain.com",
+]);
+
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
+
+    if (REDIRECT_HOSTS.has(incoming.hostname)) {
+      const target = `https://${CANONICAL_HOST}${incoming.pathname}${incoming.search}`;
+      return Response.redirect(target, 301);
+    }
+
     if (!incoming.pathname.startsWith("/api/")) {
+      // Payment-request link preview: for /?to=<addr>&amount=<n>, rewrite the
+      // Open Graph / Twitter tags so iMessage and social unfurls show the amount.
+      const to = (incoming.searchParams.get("to") || "").toLowerCase();
+      if (incoming.pathname === "/" && /^[0-9a-f]{40}$/.test(to)) {
+        const assetResponse = await env.ASSETS.fetch(request);
+        if ((assetResponse.headers.get("content-type") || "").includes("text/html")) {
+          const amount = incoming.searchParams.get("amount");
+          const amountOk = amount && /^[0-9]+(\.[0-9]+)?$/.test(amount);
+          const shortAddr = `${to.slice(0, 6)}…${to.slice(-4)}`;
+          const title = "Helix payment request";
+          const description = amountOk
+            ? `Request for ${amount} HLX to ${shortAddr}`
+            : `Send HLX to ${shortAddr}`;
+          const setContent = value => ({ element(el) { el.setAttribute("content", value); } });
+          return new HTMLRewriter()
+            .on('meta[property="og:title"]', setContent(title))
+            .on('meta[property="og:description"]', setContent(description))
+            .on('meta[name="twitter:title"]', setContent(title))
+            .on('meta[name="twitter:description"]', setContent(description))
+            .transform(assetResponse);
+        }
+        return assetResponse;
+      }
       return env.ASSETS.fetch(request);
     }
 

@@ -57,3 +57,7 @@ wallets.json.bak
 # If you would rather build them on release instead of committing binaries,
 # uncomment the next line:
 # web/downloads/*.zip
+
+# Auto-generated local checkpoints
+auto_checkpoints_*.json
+auto_checkpoints.json

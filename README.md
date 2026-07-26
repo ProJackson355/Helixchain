@@ -1,8 +1,15 @@
 # Helix Coin 1.0.0
 
-Helix is an educational proof-of-work cryptocurrency project with encrypted wallets, custom tokens, peer discovery, mempool gossip, block relay, fork handling, checkpoints, dynamic difficulty, and network hardening.  
+Helix is an educational proof-of-work cryptocurrency project with encrypted wallets, custom tokens, NFTs, peer discovery, mempool gossip, block relay, fork handling, checkpoints, dynamic difficulty, and network hardening.  
 
 ## Updates
+
+### 2026-07-26
+
+- **NFTs.** Two new consensus transactions, `nft_mint` and `nft_transfer`, back real one-of-a-kind tokens: each NFT has a unique id, a creator, a single explicit owner (not a fungible balance), on-chain metadata (name, description, image, traits) pinned by a signed SHA-256 content hash, and a creator royalty for a future marketplace. Only the owner can transfer; forged ids, tampered metadata, and double mints are rejected. New read routes `GET /nfts`, `GET /nft/{id}` (with provenance history), and `GET /nfts/owner/{address}`, plus a wallet **NFTs** tab to create, view a gallery of, and transfer NFTs. Update every node — it is a consensus feature.
+- **Block-timestamp fix.** Fast, low-difficulty blocks that share a clock tick (or miners that stamp whole seconds) were wrongly rejected as "another miner won this height." A child block may now sit up to a small tolerance behind its parent (still capped to the near future), and `/mining/submit` now returns the **actual** rejection reason instead of a vague catch-all. Consensus rule — update all nodes.
+- **Wallet quality-of-life.** Payment-request **QR codes and shareable links** (address + amount), an in-app **camera QR scanner** on Send, a saved-contacts **address book**, a **confirmation-depth** counter on mined transactions, opt-in **desktop notifications** when a pending transaction confirms, **installable PWA** (desktop and mobile, offline-capable), and an **Explorer** tab for browsing blocks, transactions, and addresses with a network-difficulty chart.
+- **Auto-checkpoints.** The node periodically records a checkpoint at a safely buried height to harden deep history against long-range reorgs, with no manual configuration.
 
 ### 2026-07-24
 

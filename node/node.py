@@ -164,7 +164,7 @@ def _transaction_from_payload(data: dict) -> Transaction:
     if not isinstance(data, dict):
         raise ValueError("transaction payload must be an object")
     tx_type = data.get("tx_type", "transfer")
-    if tx_type not in {"transfer", *Transaction.TOKEN_TYPES}:
+    if tx_type not in {"transfer", *Transaction.TOKEN_TYPES, *Transaction.NFT_TYPES}:
         raise ValueError("transaction type is unsupported")
     common_fields = {
         "sender", "receiver", "amount", "signature", "public_key",
@@ -178,6 +178,8 @@ def _transaction_from_payload(data: dict) -> Transaction:
     pool_create_fields = {"hlx_amount"}
     swap_fields = {"min_receive"}
     token_swap_fields = {"target_mint_address"}
+    nft_fields = {"tx_type", "nft_id", "nonce"}
+    nft_mint_fields = {"name", "description", "image", "uri", "metadata_hash", "attributes", "royalty_bps"}
     allowed_fields = common_fields
     if tx_type in Transaction.TOKEN_TYPES:
         allowed_fields = allowed_fields | token_fields
@@ -189,6 +191,10 @@ def _transaction_from_payload(data: dict) -> Transaction:
         allowed_fields = allowed_fields | swap_fields
     if tx_type == "token_swap":
         allowed_fields = allowed_fields | token_swap_fields
+    if tx_type in Transaction.NFT_TYPES:
+        allowed_fields = allowed_fields | nft_fields
+    if tx_type == "nft_mint":
+        allowed_fields = allowed_fields | nft_mint_fields
     unknown = set(data) - allowed_fields
     if unknown:
         raise ValueError(f"unexpected transaction fields: {', '.join(sorted(unknown))}")
@@ -206,6 +212,10 @@ def _transaction_from_payload(data: dict) -> Transaction:
         required += ("min_receive",)
     if tx_type == "token_swap":
         required += ("target_mint_address",)
+    if tx_type in Transaction.NFT_TYPES:
+        required += ("tx_type", "nft_id", "nonce")
+    if tx_type == "nft_mint":
+        required += ("name", "description", "image", "uri", "metadata_hash")
     missing = [field for field in required if data.get(field) in (None, "")]
     if missing:
         raise ValueError(f"missing transaction fields: {', '.join(missing)}")
@@ -240,6 +250,9 @@ def _transaction_from_payload(data: dict) -> Transaction:
         hlx_amount=data.get("hlx_amount"),
         min_receive=data.get("min_receive"),
         target_mint_address=data.get("target_mint_address"),
+        nft_id=data.get("nft_id"),
+        attributes=data.get("attributes"),
+        royalty_bps=data.get("royalty_bps"),
     )
     tx.signature = signature
     tx.public_key = serialization.load_pem_public_key(data["public_key"].encode())
@@ -741,6 +754,14 @@ def web_pwa_script():
     )
 
 
+@app.get("/jsqr.js", include_in_schema=False)
+def web_jsqr_library():
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "jsqr.js"),
+        media_type="application/javascript",
+    )
+
+
 @app.get("/manifest.webmanifest", include_in_schema=False)
 def web_manifest():
     return FileResponse(
@@ -853,6 +874,40 @@ def balance(address: str):
 @app.get("/health")
 def health():
     return {"status": "ok", "height": len(blockchain.chain) - 1, "version": _CONFIG["node"]["version"], "network": _CONFIG["node"]["network"]}
+
+
+@app.get("/nfts")
+def list_nfts(limit: int = 200, offset: int = 0):
+    items = blockchain.get_nfts()
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    return {"count": len(items), "total": len(items), "nfts": items[offset:offset + limit]}
+
+
+@app.get("/nft/{nft_id}")
+def get_nft(nft_id: str):
+    try:
+        nft_id = validate_hex(nft_id, "nft id", (40,))
+    except ValueError as exc:
+        return {"error": str(exc), "nft": None}
+    nft = blockchain.get_nft(nft_id)
+    if nft is None:
+        return {"nft": None}
+    history = [
+        {"block": block.index, "timestamp": block.timestamp,
+         "from": tx.sender, "to": tx.receiver, "type": tx.tx_type, "tx_id": tx.tx_id}
+        for block, tx in blockchain.get_nft_history(nft_id)
+    ]
+    return {"nft": nft, "history": history}
+
+
+@app.get("/nfts/owner/{address}")
+def nfts_by_owner(address: str):
+    try:
+        address = validate_hex(address, "address", (40,))
+    except ValueError as exc:
+        return {"error": str(exc), "nfts": []}
+    return {"nfts": blockchain.get_nfts_by_owner(address)}
 
 
 @app.get("/stats")
@@ -1374,12 +1429,13 @@ def external_mining_submit(data: dict):
         block = dict_to_block(payload)
     except (KeyError, TypeError, ValueError) as exc:
         return {"accepted": False, "message": f"Malformed block: {exc}"}
-    accepted = blockchain.receive_block(block)
+    accepted, reason = blockchain.receive_block_detailed(block)
     if not accepted:
+        stale = block.index <= len(blockchain.chain) - 1
         return {
             "accepted": False,
-            "stale": block.index <= len(blockchain.chain) - 1,
-            "message": "Block rejected or another miner won this height",
+            "stale": stale,
+            "message": reason or ("another miner won this height" if stale else "block rejected"),
         }
     relay.expire(blockchain.pending_ids())
     broadcast_block(block)

@@ -21,6 +21,13 @@ TOKEN_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{1,11}$")
 MAX_TOKEN_UNITS = 9_007_199_254_740_991
 ZERO_ADDRESS = "0" * 40
 MAX_HASH = 16 ** 64 - 1  # largest possible 256-bit SHA-256 digest value
+# A child block's timestamp must not predate its parent's, but low-difficulty
+# blocks are solved in a fraction of a second, so consecutive blocks routinely
+# land in the same clock tick, and many miners stamp whole seconds. Allow a
+# child to be up to this many seconds behind its parent so honest, fast, or
+# integer-timestamp miners are not rejected. The block is still capped to the
+# near future, so overall time can only trend forward.
+TIMESTAMP_BACKWARD_TOLERANCE = 2.0
 SWAP_FEE_NUMERATOR = 997
 SWAP_FEE_DENOMINATOR = 1000
 
@@ -45,6 +52,9 @@ def _transaction_from_dict(data: dict) -> Transaction:
         hlx_amount=data.get("hlx_amount"),
         min_receive=data.get("min_receive"),
         target_mint_address=data.get("target_mint_address"),
+        nft_id=data.get("nft_id"),
+        attributes=data.get("attributes"),
+        royalty_bps=data.get("royalty_bps"),
     )
     tx.signature = data.get("signature")
     tx.tx_id = data.get("tx_id")
@@ -198,6 +208,9 @@ class Blockchain:
         self.token_swap_activation_height = int(
             setting("token_swap_activation_height", "HELIX_TOKEN_SWAP_ACTIVATION_HEIGHT", 200)
         )
+        self.nft_activation_height = int(
+            setting("nft_activation_height", "HELIX_NFT_ACTIVATION_HEIGHT", 1)
+        )
         self.max_orphans = int(setting("max_orphans", "HELIX_MAX_ORPHANS", 100))
         self.orphan_ttl_seconds = int(
             setting("orphan_ttl_seconds", "HELIX_ORPHAN_TTL", 1800)
@@ -242,8 +255,17 @@ class Blockchain:
         self._token_supply: dict[str, int] = {}
         self._token_accounts: set[tuple[str, str]] = set()
         self._token_history: dict[tuple[str, str], list[tuple[Block, Transaction]]] = defaultdict(list)
+        self.auto_checkpoint_interval = int(setting(
+            "auto_checkpoint_interval", "HELIX_AUTO_CHECKPOINT_INTERVAL", 25))
+        self.auto_checkpoint_depth = int(setting(
+            "auto_checkpoint_depth", "HELIX_AUTO_CHECKPOINT_DEPTH", 50))
+        self.auto_checkpoints_file = Path(os.getenv(
+            "HELIX_AUTO_CHECKPOINTS_FILE",
+            self.database.parent / f"auto_checkpoints_{self.database.stem}.json"))
         self.set_checkpoints(consensus.get("checkpoints", {}))
+        self._load_auto_checkpoints()
         self.load()
+        self.update_auto_checkpoints()
 
     @staticmethod
     def _valid_address(address: str) -> bool:
@@ -287,6 +309,8 @@ class Blockchain:
         token_supply: dict[str, int] = defaultdict(int)
         token_accounts: set[tuple[str, str]] = set()
         token_history: dict[tuple[str, str], list[tuple[Block, Transaction]]] = defaultdict(list)
+        nfts: dict[str, dict] = {}
+        nft_history: dict[str, list[tuple[Block, Transaction]]] = defaultdict(list)
         for block in self.chain:
             for tx in block.transactions:
                 if tx.sender == "SYSTEM":
@@ -295,6 +319,9 @@ class Blockchain:
                 elif tx.tx_type == "transfer":
                     balances[tx.sender] -= tx.amount
                     balances[tx.receiver] += tx.amount
+                elif tx.tx_type in Transaction.NFT_TYPES:
+                    self._apply_nft_transaction(tx, nfts, block_index=block.index)
+                    nft_history[tx.nft_id].append((block, tx))
                 else:
                     self._apply_token_transaction(
                         tx, tokens, token_balances, token_supply,
@@ -329,6 +356,25 @@ class Blockchain:
         self._token_supply = dict(token_supply)
         self._token_accounts = token_accounts
         self._token_history = token_history
+        self._nfts = nfts
+        self._nft_history = nft_history
+
+    def get_nfts(self) -> list[dict]:
+        with self._lock:
+            return [dict(nft) for nft in getattr(self, "_nfts", {}).values()]
+
+    def get_nft(self, nft_id: str) -> dict | None:
+        with self._lock:
+            nft = getattr(self, "_nfts", {}).get(nft_id)
+            return dict(nft) if nft else None
+
+    def get_nfts_by_owner(self, owner: str) -> list[dict]:
+        with self._lock:
+            return [dict(nft) for nft in getattr(self, "_nfts", {}).values() if nft.get("owner") == owner]
+
+    def get_nft_history(self, nft_id: str):
+        with self._lock:
+            return list(getattr(self, "_nft_history", {}).get(nft_id, ()))
 
     def get_address_history(self, address: str):
         with self._lock:
@@ -357,6 +403,10 @@ class Blockchain:
             return sum(len(block.transactions) for block in self.chain)
 
     def save(self) -> None:
+        try:
+            self.update_auto_checkpoints()
+        except Exception:
+            pass
         data = {
             "chain": [
                 {
@@ -519,6 +569,95 @@ class Blockchain:
             amount_with_fee * reserve_out
             // (reserve_in * SWAP_FEE_DENOMINATOR + amount_with_fee)
         )
+
+    @staticmethod
+    def _validate_nft_attributes(attributes) -> str | None:
+        if not isinstance(attributes, list):
+            return "NFT attributes must be a list"
+        if len(attributes) > 30:
+            return "an NFT can have at most 30 attributes"
+        for attr in attributes:
+            if not isinstance(attr, dict) or set(attr.keys()) != {"trait_type", "value"}:
+                return "each NFT attribute must have exactly trait_type and value"
+            trait_type, value = attr.get("trait_type"), attr.get("value")
+            if not isinstance(trait_type, str) or not 1 <= len(trait_type) <= 40:
+                return "attribute trait_type must be 1 to 40 characters"
+            if not isinstance(value, str) or not 1 <= len(value) <= 80:
+                return "attribute value must be 1 to 80 characters"
+        return None
+
+    def _apply_nft_transaction(self, tx: Transaction, nfts: dict, block_index: int | None = None) -> str | None:
+        """Validate and apply one NFT operation.
+
+        ERC-721 style: each NFT is a unique asset with an explicit owner (not a
+        fungible balance). ``nft_mint`` creates it (owner = creator); only the
+        current owner can ``nft_transfer`` it.
+        """
+        if tx.tx_type not in Transaction.NFT_TYPES:
+            return "transaction type is unsupported"
+        if block_index is not None and block_index < self.nft_activation_height:
+            return "NFTs are not active at this block height"
+        if not self._valid_address(tx.nft_id):
+            return "NFT id is invalid"
+        if not isinstance(tx.nonce, str) or TOKEN_NONCE_RE.fullmatch(tx.nonce) is None:
+            return "NFT transaction nonce must be 32 lowercase hexadecimal characters"
+        if tx.amount != 0:
+            return "NFT transactions must use amount zero"
+
+        if tx.tx_type == "nft_mint":
+            if tx.nft_id in nfts:
+                return "NFT id already exists"
+            if tx.nft_id != Transaction.nft_address(tx.sender, tx.nonce):
+                return "NFT id does not match its creator and nonce"
+            if tx.receiver != tx.sender:
+                return "an NFT is minted to its creator"
+            if not isinstance(tx.name, str) or not 1 <= len(tx.name.strip()) <= 64:
+                return "NFT name must contain 1 to 64 characters"
+            if tx.name != tx.name.strip() or any(ord(char) < 32 for char in tx.name):
+                return "NFT name contains invalid whitespace or control characters"
+            if not isinstance(tx.description, str) or not 1 <= len(tx.description.strip()) <= 1000:
+                return "NFT description must contain 1 to 1000 characters"
+            if tx.description != tx.description.strip() or "\x00" in tx.description:
+                return "NFT description contains invalid control characters"
+            if not self._valid_metadata_url(tx.image):
+                return "NFT image must be a valid HTTPS URL"
+            if not self._valid_metadata_url(tx.uri):
+                return "NFT metadata URI must be a valid HTTPS URL"
+            attributes = tx.attributes if isinstance(tx.attributes, list) else []
+            attribute_error = self._validate_nft_attributes(attributes)
+            if attribute_error is not None:
+                return attribute_error
+            expected_hash = Transaction.nft_metadata_hash(tx.name, tx.description, tx.image, attributes)
+            if tx.metadata_hash != expected_hash:
+                return "NFT metadata hash does not match its on-chain fields"
+            royalty = tx.royalty_bps or 0
+            if not 0 <= royalty <= 10000:
+                return "NFT royalty must be between 0 and 10000 basis points"
+            nfts[tx.nft_id] = {
+                "nft_id": tx.nft_id,
+                "creator": tx.sender,
+                "owner": tx.sender,
+                "name": tx.name,
+                "description": tx.description,
+                "image": tx.image,
+                "uri": tx.uri or "",
+                "metadata_hash": tx.metadata_hash,
+                "attributes": attributes,
+                "royalty_bps": royalty,
+                "minted_block": block_index,
+            }
+            return None
+
+        # nft_transfer
+        nft = nfts.get(tx.nft_id)
+        if nft is None:
+            return "NFT does not exist on the confirmed chain or earlier in this block"
+        if tx.sender != nft["owner"]:
+            return "only the current NFT owner can transfer it"
+        if not self._valid_address(tx.receiver):
+            return "NFT recipient address is invalid"
+        nft["owner"] = tx.receiver
+        return None
 
     def _apply_token_transaction(
         self,
@@ -857,6 +996,14 @@ class Blockchain:
                 return "transaction exceeds the sender's available HLX balance"
             return None
 
+        if tx.tx_type in Transaction.NFT_TYPES:
+            nfts = {nid: dict(nft) for nid, nft in getattr(self, "_nfts", {}).items()}
+            for existing in pending:
+                if existing.tx_type in Transaction.NFT_TYPES:
+                    if self._apply_nft_transaction(existing, nfts, block_index=len(self.chain)) is not None:
+                        return "existing pending NFT state is invalid"
+            return self._apply_nft_transaction(tx, nfts, block_index=len(self.chain))
+
         tokens = {mint: dict(token) for mint, token in self._tokens.items()}
         token_balances = defaultdict(int, self._token_balances)
         token_supply = defaultdict(int, self._token_supply)
@@ -1058,14 +1205,17 @@ class Blockchain:
         token_balances: dict,
         token_supply: dict,
         chain_context=None,
+        nfts: dict | None = None,
     ):
         chain_context = self.chain if chain_context is None else chain_context
+        if nfts is None:
+            nfts = {}
         if block.index != previous.index + 1:
             return False, "block index is not sequential", total_supply
         if block.previous_hash != previous.hash:
             return False, "previous hash does not match chain tip", total_supply
-        if block.timestamp <= previous.timestamp:
-            return False, "block timestamp must be newer than its parent", total_supply
+        if block.timestamp < previous.timestamp - TIMESTAMP_BACKWARD_TOLERANCE:
+            return False, "block timestamp is older than its parent", total_supply
         if block.timestamp > time.time() + 120:
             return False, "block timestamp is too far in the future", total_supply
         if block.calculate_hash() != block.hash:
@@ -1115,6 +1265,10 @@ class Blockchain:
                     return False, "transaction overspends sender balance", total_supply
                 balances[tx.sender] -= tx.amount
                 balances[tx.receiver] += tx.amount
+            elif tx.tx_type in Transaction.NFT_TYPES:
+                nft_error = self._apply_nft_transaction(tx, nfts, block_index=block.index)
+                if nft_error is not None:
+                    return False, nft_error, total_supply
             else:
                 token_error = self._apply_token_transaction(
                     tx, tokens, token_balances, token_supply,
@@ -1139,6 +1293,7 @@ class Blockchain:
         tokens = {}
         token_balances = defaultdict(int)
         token_supply = defaultdict(int)
+        nfts = {}
         for existing in self.chain[1:]:
             ok, reason, total_supply = self._validate_block_against_state(
                 existing,
@@ -1150,12 +1305,13 @@ class Blockchain:
                 token_balances,
                 token_supply,
                 self.chain[: existing.index],
+                nfts,
             )
             if not ok:
                 return False, f"local chain invalid before new block: {reason}"
         ok, reason, _ = self._validate_block_against_state(
             block, self.chain[-1], balances, seen, total_supply,
-            tokens, token_balances, token_supply, self.chain
+            tokens, token_balances, token_supply, self.chain, nfts
         )
         return ok, reason
 
@@ -1181,6 +1337,7 @@ class Blockchain:
         tokens = {}
         token_balances = defaultdict(int)
         token_supply = defaultdict(int)
+        nfts = {}
         for position in range(1, len(chain)):
             block = chain[position]
             previous = chain[position - 1]
@@ -1189,7 +1346,7 @@ class Blockchain:
                 return False, f"block {position}: checkpoint mismatch"
             ok, reason, total_supply = self._validate_block_against_state(
                 block, previous, balances, seen, total_supply,
-                tokens, token_balances, token_supply, chain[:position]
+                tokens, token_balances, token_supply, chain[:position], nfts
             )
             if not ok:
                 return False, f"block {position}: {reason}"
@@ -1333,8 +1490,21 @@ class Blockchain:
         return MAX_HASH // (target + 1)
 
     def chain_work(self, chain=None) -> int:
-        chain = self.chain if chain is None else chain
-        return sum(self.block_work(block, chain[:block.index]) for block in chain[1:])
+        target_chain = self.chain if chain is None else chain
+        # Cache the local chain's total work, keyed by (length, tip hash) — which
+        # uniquely identifies the chain's contents — so the many comparisons during
+        # a sync cycle don't each recompute it. Any append or reorg changes the tip
+        # hash (or length) and invalidates the cache automatically.
+        if target_chain is self.chain:
+            tip = target_chain[-1].hash if target_chain else ""
+            key = (len(target_chain), tip)
+            if getattr(self, "_chain_work_key", None) == key:
+                return self._chain_work_value
+            value = sum(self.block_work(b, target_chain[:b.index]) for b in target_chain[1:])
+            self._chain_work_key = key
+            self._chain_work_value = value
+            return value
+        return sum(self.block_work(b, target_chain[:b.index]) for b in target_chain[1:])
 
     def set_checkpoints(self, checkpoints: dict) -> None:
         cleaned = {}
@@ -1344,6 +1514,49 @@ class Blockchain:
             except (TypeError, ValueError):
                 continue
         self.checkpoints = cleaned
+
+    def update_auto_checkpoints(self) -> None:
+        """Pin this node's own chain at a safe depth so a very deep reorg can't
+        rewrite finalized history (local finality). Only interval-aligned blocks
+        already ``auto_checkpoint_depth`` behind the tip are pinned, so honest
+        short reorgs are never blocked. Persisted so it survives restarts."""
+        interval = self.auto_checkpoint_interval
+        depth = self.auto_checkpoint_depth
+        if interval <= 0 or depth <= 0:
+            return
+        safe_height = (len(self.chain) - 1) - depth
+        if safe_height <= 0:
+            return
+        pin = (safe_height // interval) * interval
+        if pin <= 0 or pin >= len(self.chain):
+            return
+        block_hash = self.chain[pin].hash
+        if self.checkpoints.get(pin) == block_hash:
+            return
+        self.checkpoints[pin] = block_hash
+        self._save_auto_checkpoints()
+
+    def _load_auto_checkpoints(self) -> None:
+        try:
+            raw = json.loads(self.auto_checkpoints_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return
+        for height, block_hash in (raw or {}).items():
+            try:
+                self.checkpoints[int(height)] = str(block_hash).lower()
+            except (TypeError, ValueError):
+                continue
+
+    def _save_auto_checkpoints(self) -> None:
+        try:
+            self.auto_checkpoints_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.auto_checkpoints_file.with_suffix(self.auto_checkpoints_file.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps({str(h): v for h, v in self.checkpoints.items()}, indent=2),
+                encoding="utf-8")
+            os.replace(tmp, self.auto_checkpoints_file)
+        except OSError:
+            pass
 
     def _checkpoint_valid(self, block: Block) -> bool:
         expected = self.checkpoints.get(block.index)
@@ -1386,19 +1599,26 @@ class Blockchain:
         return self.validate_next_block(block)[0]
 
     def receive_block(self, block):
+        return self.receive_block_detailed(block)[0]
+
+    def receive_block_detailed(self, block):
+        """Like receive_block, but also returns a human-readable reason so callers
+        (e.g. the external-mining endpoint) can tell the miner exactly what
+        happened instead of a vague "rejected" message."""
         with self._lock:
             if not self._checkpoint_valid(block):
                 print(f"Rejected block {getattr(block, 'index', '?')}: checkpoint mismatch")
-                return False
+                return False, "checkpoint mismatch"
             if block.previous_hash != self.chain[-1].hash:
                 if block.index > self.chain[-1].index:
                     self.add_orphan(block)
                     print(f"Stored orphan block {block.index}: parent not available")
-                return False
+                    return False, "parent block not available yet (stored as orphan)"
+                return False, "stale: another block already extends this height"
             valid, reason = self.validate_next_block(block)
             if not valid:
                 print(f"Rejected block {getattr(block, 'index', '?')}: {reason}")
-                return False
+                return False, reason
             self.chain.append(block)
             attached = self._attach_orphans()
             self._rebuild_indexes()
@@ -1412,7 +1632,7 @@ class Blockchain:
                     kept.append(tx)
             self.pending_transactions = kept
             self.save()
-            return True
+            return True, None
 
     def replace_chain(self, new_chain):
         with self._lock:

@@ -50,6 +50,8 @@
     "fine_target_block_time_seconds": 600,
     "fine_initial_difficulty": 5.5,
     "fine_max_adjust_factor": 16,
+    "auto_checkpoint_interval": 25,
+    "auto_checkpoint_depth": 50,
     "token_metadata_activation_height": 41,
     "token_exchange_activation_height": 41,
     "token_swap_activation_height": 200,
