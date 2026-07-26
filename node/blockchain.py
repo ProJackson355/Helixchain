@@ -141,6 +141,19 @@ class Blockchain:
         self.difficulty_adjustment_interval = int(
             setting("difficulty_adjustment_interval", "HELIX_DIFFICULTY_INTERVAL", 10)
         )
+        # At and after this height the fine-difficulty retarget switches to a
+        # longer window (difficulty_new_adjustment_interval blocks). Below it the
+        # original interval is used unchanged, so earlier blocks stay valid. -1
+        # disables the change. The change height itself is a retarget boundary
+        # (the transition window may be shorter than a full interval). Keep this
+        # above the current chain tip when enabling it, and upgrade every node.
+        self.difficulty_interval_change_height = int(setting(
+            "difficulty_interval_change_height", "HELIX_DIFFICULTY_INTERVAL_CHANGE_HEIGHT", -1
+        ))
+        self.difficulty_new_adjustment_interval = int(setting(
+            "difficulty_new_adjustment_interval", "HELIX_DIFFICULTY_NEW_INTERVAL",
+            self.difficulty_adjustment_interval,
+        ))
         self.target_block_time = int(
             setting("target_block_time_seconds", "HELIX_TARGET_BLOCK_TIME", 60)
         )
@@ -1436,6 +1449,43 @@ class Blockchain:
         except (TypeError, ValueError):
             return False
 
+    def _retarget_schedule(self, activation: int, upto: int):
+        """Yield (boundary, window_size) pairs for the fine-difficulty retarget.
+
+        A boundary is a height at which difficulty is recomputed from the window
+        of blocks that precede it. Normally boundaries fall every
+        ``difficulty_adjustment_interval`` blocks from the activation height. If
+        ``difficulty_interval_change_height`` is set, boundaries below it keep the
+        original interval, the change height itself is a boundary (its window may
+        be shorter — the one-time transition), and every boundary at/after it is
+        ``difficulty_new_adjustment_interval`` blocks apart. Deterministic, so
+        mining and validation always agree.
+        """
+        old = max(2, self.difficulty_adjustment_interval)
+        change = self.difficulty_interval_change_height
+        new = max(2, self.difficulty_new_adjustment_interval)
+        use_change = change is not None and change > activation
+        prev = activation
+        boundary = activation + old
+        # Boundaries on the original cadence (all strictly below the change height
+        # when the change is enabled).
+        while boundary <= upto and (not use_change or boundary < change):
+            yield boundary, boundary - prev
+            prev = boundary
+            boundary += old
+        if not use_change:
+            return
+        if change > upto:
+            return
+        # The change height is itself a boundary; its window covers whatever blocks
+        # remain since the previous boundary (a shorter, one-time transition window).
+        yield change, change - prev
+        prev = change
+        boundary = change + new
+        while boundary <= upto:
+            yield boundary, new
+            boundary += new
+
     def expected_target(self, next_index: int, chain=None) -> int:
         """Required proof-of-work target for the block at next_index.
 
@@ -1450,7 +1500,6 @@ class Blockchain:
         if next_index < activation:
             return self.difficulty_to_target(self.expected_difficulty(next_index, chain))
 
-        interval = max(2, self.difficulty_adjustment_interval)
         easiest = self.difficulty_to_target(self.min_difficulty)   # largest target = difficulty floor
         # Seed from the configured starting difficulty (which may be fractional),
         # or, if unset, from the difficulty in force at the activation boundary.
@@ -1458,16 +1507,16 @@ class Blockchain:
             target = self.difficulty_to_target(self.fine_initial_difficulty)
         else:
             target = self.difficulty_to_target(self.expected_difficulty(activation, chain))
-        for boundary in range(activation + interval, next_index + 1, interval):
+        for boundary, step in self._retarget_schedule(activation, next_index):
             if boundary > len(chain):
                 continue
-            window = chain[boundary - interval:boundary]
-            if len(window) < interval:
+            window = chain[boundary - step:boundary]
+            if len(window) < step:
                 continue
-            # Expected time for one window across its (interval - 1) gaps. The
+            # Expected time for one window across its (step - 1) gaps. The
             # per-block target lengthens (e.g. to 10 minutes) once the retarget
             # takes effect for blocks at/after its activation height.
-            expected = max(1, self.fine_block_time_for_height(boundary) * max(1, interval - 1))
+            expected = max(1, self.fine_block_time_for_height(boundary) * max(1, step - 1))
             elapsed = max(1, int(window[-1].timestamp - window[0].timestamp))
             # Average block time above target (elapsed > expected) -> a larger
             # target -> easier. Below target -> a smaller target -> harder. The

@@ -12,6 +12,7 @@ const PUBLIC_ROUTES = [
   ["GET", /^\/(?:balance|history)\/[0-9a-f]{40}$/],
   ["GET", /^\/transactions\/recent$/],
   ["GET", /^\/network\/history$/],
+  ["GET", /^\/network\/mint_history$/],
   ["GET", /^\/block\/\d+$/],
   ["GET", /^\/transaction\/[0-9a-f]{64}$/],
   ["GET", /^\/nodes\/audit\/cached$/],

@@ -58,15 +58,20 @@
       border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
       box-shadow: 0 1px 0 #ffffff08, 0 10px 26px -20px #000;
     }
-    /* Installed PWA only: translucent status bar means content sits under the
-       notch / Dynamic Island, so pad the header (and nav panel) down. The browser
-       is display-mode:browser and is left exactly as it was. */
+    /* Installed PWA only: the status bar is translucent, so content sits under the
+       notch / Dynamic Island. Push the whole top bar DOWN so it physically begins
+       below the island, with the app background showing in the safe area above it.
+       Using margin-top (not padding) means the bar's dark background starts below
+       the island rather than filling the notch. `top` keeps it below the island
+       when the header sticks on scroll. The browser (display-mode:browser) is left
+       exactly as it was. #app > header outranks the mobile `header` rule so the
+       shift is not clobbered on phones. */
     @media (display-mode: standalone) {
-      /* Whichever element is at the very top (banner when disconnected, header
-         otherwise) drops below the notch / Dynamic Island. */
       #node-banner { padding-top: calc(10px + env(safe-area-inset-top)); }
-      #node-banner + #app > header { padding-top: 16px; }  /* avoid a double gap when the banner shows */
-      header { padding-top: calc(16px + env(safe-area-inset-top)); }
+      #app > header { margin-top: env(safe-area-inset-top); top: env(safe-area-inset-top); }
+      /* When the disconnected banner is showing it already fills the safe area, so
+         don't add a second gap above the header. */
+      #node-banner + #app > header { margin-top: 0; top: 0; }
     }
     @media (display-mode: standalone) and (max-width: 700px) {
       #main-nav { padding-top: calc(18px + env(safe-area-inset-top)); }
@@ -996,7 +1001,7 @@
     <section class="card docs-section">
       <div class="card-title">How the blockchain works</div>
       <p><strong>Blocks and the chain.</strong> The chain starts with a fixed, empty genesis block. Every block after it holds a list of transactions plus exactly one mining reward, is identified by its SHA-256 hash, and points back to its parent by that parent's hash. Change anything in a block and its hash changes, which breaks every block after it — that is what makes the history tamper-evident.</p>
-      <p><strong>Proof of work and difficulty.</strong> A block is only valid if its hash, read as a number, is less than or equal to the current <strong>target</strong>: <code>int(hash, 16) &le; target</code>. Miners repeatedly change a nonce until the hash falls under the target. A smaller target is harder to hit. Helix uses a fine-grained target, so difficulty is continuous rather than jumping in 16&times; steps: <code>difficulty = 64 &minus; log16(target + 1)</code>, and it can be fractional. The chain seeds at difficulty <strong>5.5</strong> from block&nbsp;1 and retargets every 10 blocks toward a <strong>10-minute</strong> average block time. The size of each adjustment scales with how far the recent average was from target — a run of very fast blocks hardens far more than blocks that were only slightly quick — bounded to a large-but-finite move per window, with no upper cap and a floor at the minimum difficulty.</p>
+      <p><strong>Proof of work and difficulty.</strong> A block is only valid if its hash, read as a number, is less than or equal to the current <strong>target</strong>: <code>int(hash, 16) &le; target</code>. Miners repeatedly change a nonce until the hash falls under the target. A smaller target is harder to hit. Helix uses a fine-grained target, so difficulty is continuous rather than jumping in 16&times; steps: <code>difficulty = 64 &minus; log16(target + 1)</code>, and it can be fractional. The chain seeds at difficulty <strong>5.5</strong> from block&nbsp;1 and retargets every <strong>100 blocks</strong> toward a <strong>10-minute</strong> average block time (the first retarget is at block&nbsp;101). The size of each adjustment scales with how far the recent average was from target — a run of very fast blocks hardens far more than blocks that were only slightly quick — bounded to a large-but-finite move per window, with no upper cap and a floor at the minimum difficulty.</p>
       <p><strong>Transactions.</strong> Transactions are signed with secp256k1 keys that live only in your browser (the network is non-custodial — no server holds your keys). Besides a plain HLX transfer, transactions can create a token, mint, transfer, change a token's DAD authority, create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn, and can <strong>mint or transfer a one-of-a-kind NFT</strong>. A submitted transaction sits in the mempool as <strong>pending</strong> until a miner includes it in a block.</p>
       <p><strong>Mining and rewards.</strong> Mining happens on the miner's own hardware, not the node: a miner pulls a work template (<code>/mining/work</code>), hashes it locally on CPU, GPU, or through a pool, and submits the solved block (<code>/mining/submit</code>). Each valid block pays its miner a single <code>SYSTEM</code> reward transaction — this is the <em>only</em> way new HLX is created, and never beyond the fixed maximum supply.</p>
       <p><strong>Which chain is real (consensus).</strong> Nodes always follow the chain with the most <strong>accumulated proof-of-work</strong> (<code>chain_work</code>), not merely the longest. If two miners find a block at the same height at once, the network briefly splits and each node keeps the block it saw first. Nothing settles until the next block is mined: whichever branch it extends gains more work, and every node reorganizes onto that heavier branch. The abandoned block becomes an <strong>orphan</strong> — its ordinary transactions go back to the mempool to be mined again, and its reward is discarded, so only the winning miner is paid. Configured <strong>checkpoints</strong> stop any reorg from rewriting history past a fixed point.</p>
@@ -1032,7 +1037,7 @@
         <li>After creation is mined, use <strong>Management</strong> to mint supply, transfer, or <strong>Burn</strong>. Only the DAD authority can mint or burn; burning permanently destroys tokens from the DAD's balance and lowers the total minted supply.</li>
         <li><strong>Discover</strong> lists HLX and every confirmed token. A DAD can create a market by locking HLX plus its entire confirmed token balance; anyone can then buy or sell through the pool.</li>
         <li>The dedicated <strong>Swap</strong> tab atomically trades one token for another, routed through both tokens' HLX pools. Quotes include both 0.3% pool fees, and a 1% slippage guard protects each trade.</li>
-        <li>Token price uses OHLC candlesticks. Choose the candle interval — <strong>Minute, Hour, Day, Month, or Auto</strong> — and set exactly when the chart starts with the <strong>Start</strong> date-and-time picker. Cropping the start rescales the vertical axis so small values stay readable next to large ones. Drag to pan, scroll to zoom, drag the corner to resize, and double-click to reset. Rising candles are green and falling candles are red.</li>
+        <li>Token price uses OHLC candlesticks. Choose the candle interval — <strong>Minute, Hour, Day, Month, or Auto</strong> — and set exactly when the chart starts with the <strong>Start</strong> date-and-time picker. <strong>Fit all</strong> zooms out so every candle is visible in the view at once. Cropping the start rescales the vertical axis so small values stay readable next to large ones. Drag to pan, scroll to zoom, drag the corner to resize, and double-click to reset. Rising candles are green and falling candles are red.</li>
       </ol>
     </section>
 
@@ -1106,7 +1111,7 @@
         <li>Windows and Linux are supported by the official CuPy wheels. The current miner uses the first NVIDIA GPU and does not combine multiple GPUs.</li>
         <li>AMD, Intel, Apple Silicon, and other non-CUDA GPUs are not supported. CPU mode remains available on those systems.</li>
       </ul>
-      <p>Difficulty resets once to 3 at block 161. It stays at 3 through block 170, then resumes automatic adjustment every 10 blocks using a 160-second target. A solution may take more or less than the target because proof-of-work is probabilistic.</p>
+      <p>Difficulty is seeded at 5.5 from block 1 and retargets every 100 blocks toward a 10-minute average block time (first retarget at block 101). A solution may take more or less than the target because proof-of-work is probabilistic.</p>
     </section>
 
     <section class="card docs-section">
@@ -1131,17 +1136,17 @@
     <section class="card docs-section">
       <div class="card-title">Network rules and maintenance</div>
       <ul>
-        <li>Reward schedule: 10 HLX for blocks 0-89, 2 HLX for blocks 90-299, and 10 HLX from block 300 onward.</li>
-        <li>Historical difficulty rules remain valid through block 160. Difficulty resets to 3 at block 161, stays at 3 through block 170, and can adjust again beginning at block 171.</li>
-        <li>From block 161 onward, the target average is 160 seconds. A completed 10-block window below 80 seconds raises difficulty by one; a window above 160 seconds lowers it by one.</li>
-        <li>Fine-grained difficulty: once the configured <code>fine_difficulty_activation_height</code> is reached, proof of work uses a Bitcoin-style numeric target (valid when <code>int(hash, 16) &le; target</code>) that retargets smoothly by the ratio of actual to expected block time — bounded to a 4x move per window — instead of jumping a whole 16x level at a time. Below that height the leading-zero rule is preserved exactly, so existing blocks stay valid. Miners and pools read the exact <code>target</code> from <code>/mining/work</code>. Set the activation height above the current chain tip and upgrade every node before it.</li>
+        <li><strong>Block-1 relaunch.</strong> This chain was relaunched with a fresh genesis and every rule active from block&nbsp;1 — there are no phase-in heights. Applying this ruleset requires a fresh chain; every node must reset and run the same build.</li>
+        <li>Reward: a flat <strong>10 HLX per block from block&nbsp;1</strong>, up to the maximum supply. (There is no longer a 10&rarr;2&rarr;10 schedule.)</li>
+        <li>Difficulty: proof of work uses a Bitcoin-style numeric target (valid when <code>int(hash, 16) &le; target</code>) active from block&nbsp;1, seeded at difficulty <strong>5.5</strong>, retargeting smoothly by the ratio of actual to expected block time toward a <strong>10-minute</strong> average — bounded per window, floored at the minimum difficulty with no upper cap. Miners and pools read the exact <code>target</code> from <code>/mining/work</code>.</li>
+        <li>Difficulty retarget interval: <strong>every 100 blocks from block&nbsp;1</strong> (<code>difficulty_adjustment_interval</code> = 100); the first retarget is at block&nbsp;101. There is no reset height.</li>
         <li>Maximum native supply: 20,000,000 HLX.</li>
-        <li>Atomic token swaps activated at block 200 (protocol 10). Token-to-token trades route through both HLX pools.</li>
+        <li>Tokens, liquidity pools, and atomic token-to-token swaps are all active from block&nbsp;1. Token-to-token trades route through both HLX pools.</li>
         <li>The DAD token-burn feature requires every node to run the updated build; nodes on older code reject <code>token_burn</code> transactions, so upgrade all nodes together before relying on it.</li>
         <li>NFT mint and transfer are consensus transactions: nodes on older code reject them, so upgrade every node together before relying on NFTs.</li>
         <li>Block timestamps must not run backward past their parent by more than a small tolerance (and still may not be far in the future). This lets fast, low-difficulty blocks that share a clock tick — or miners that stamp whole seconds — be accepted instead of wrongly rejected as "another miner won." It is a consensus rule, so update every node together.</li>
         <li>Auto-checkpoints: the node periodically records a checkpoint at a safely buried height so deep history can't be reorganized, hardening the chain against long-range rewrites without manual configuration.</li>
-        <li>At block 300, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> becomes the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
+        <li>From block 1, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> is the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
         <li>Before upgrading or copying chain data, stop the node and back up its database.</li>
         <li>Use <code>python helixctl.py validate</code> to verify the local chain.</li>
       </ul>
@@ -1251,7 +1256,7 @@
 <!-- Self-hosted QR generator (no external CDN dependency). -->
 <script src="/qrcode.js?v=1" defer></script>
 <!-- Bump the ?v= version whenever app.js changes so browsers don't serve a stale cached copy. -->
-<script src="/app.js?v=20260730" defer></script>
+<script src="/app.js?v=20260732" defer></script>
 <script src="/pwa.js?v=1" defer></script>
 </body>
 </html>

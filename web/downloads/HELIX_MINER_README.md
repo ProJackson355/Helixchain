@@ -43,10 +43,9 @@ It checks the chain tip about once per second. If another miner wins, the app
 updates to the new height and starts fresh work; the log shows how long the
 completed round took whether this miner or another miner won it.
 
-Difficulty resets once to 3 at block 161 and stays at 3 through block 170.
-Beginning with block 171, it adjusts every 10 blocks using a 160-second target:
-an average below 80 seconds raises it and an average above 160 seconds lowers
-it. Individual solve times vary because proof-of-work is probabilistic.
+Difficulty is seeded at 5.5 from block 1 and retargets every 100 blocks toward a
+10-minute average block time (the first retarget is at block 101). Individual
+solve times vary because proof-of-work is probabilistic.
 
 Helix is educational software and has not received a professional security
 audit.

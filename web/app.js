@@ -1158,6 +1158,9 @@ let TOKEN_CHART_VIEW = null;
 let TOKEN_CHART_POINTS = [];
 let TOKEN_CHART_TOKEN = null;
 let TOKEN_CHART_INTERVAL = null; // forced candle width in seconds; null = auto-fit
+// Synthetic "token" so the shared chart engine can draw HLX minting: instead of
+// a pool price, each point's value is the cumulative supply after that block.
+const HLX_MINT_SUBJECT = { mint_address: 'HLX', symbol: 'HLX', decimals: 0, __mint: true };
 const TOKEN_CHART_RANGES = [
   { key: 'minute', label: 'Minute', seconds: 60 },
   { key: 'hour', label: 'Hour', seconds: 3600 },
@@ -1311,7 +1314,9 @@ function bindTokenChartInteractions(container, allPoints, metrics) {
     crossX?.setAttribute('x1', pointX); crossX?.setAttribute('x2', pointX);
     crossY?.setAttribute('y1', pointY); crossY?.setAttribute('y2', pointY);
     crossX?.setAttribute('visibility', 'visible'); crossY?.setAttribute('visibility', 'visible');
-    tooltip.innerHTML = point.close === undefined
+    tooltip.innerHTML = metrics.mint
+      ? `<strong>${escapeHtml(fmtDate(point.timestamp))}</strong><br>Minted +${escapeHtml(compactPrice(Math.max(0, (point.close ?? 0) - (point.open ?? 0))))} HLX<br>Total ${escapeHtml(compactPrice(point.close ?? pointPrice))} HLX${point.block === undefined ? '' : `<br>Block ${escapeHtml(point.block)}`}`
+      : point.close === undefined
       ? `<strong>${escapeHtml(compactPrice(pointPrice))} HLX</strong><br>${escapeHtml(fmtDate(point.timestamp))}${point.block === undefined ? '' : `<br>Block ${escapeHtml(point.block)}`}`
       : `<strong>${escapeHtml(fmtDate(point.timestamp))}</strong><br>O ${escapeHtml(compactPrice(point.open))} &middot; H ${escapeHtml(compactPrice(point.high))}<br>L ${escapeHtml(compactPrice(point.low))} &middot; C ${escapeHtml(compactPrice(point.close))}${point.block === undefined ? '' : `<br>Last block ${escapeHtml(point.block)}`}`;
     const localX = (pointX / width) * position.rect.width;
@@ -1396,11 +1401,12 @@ function renderTokenPriceChart(container, token, rawPoints) {
   if (TOKEN_CHART_TOKEN?.mint_address !== token.mint_address) { TOKEN_CHART_VIEW = null; TOKEN_CHART_INTERVAL = null; }
   TOKEN_CHART_TOKEN = token;
   TOKEN_CHART_POINTS = rawPoints;
-  const allPoints = rawPoints.map(point => ({ ...point, price: marketPointPrice(point, token.decimals) }))
-    .filter(point => point.price !== null)
+  const isMint = !!token.__mint;
+  const allPoints = rawPoints.map(point => ({ ...point, price: isMint ? Number(point.supply) : marketPointPrice(point, token.decimals) }))
+    .filter(point => Number.isFinite(point.price))
     .sort((left, right) => left.timestamp - right.timestamp);
   if (!allPoints.length) {
-    container.innerHTML = '<div class="empty">Price history starts when an exchange pool is confirmed.</div>';
+    container.innerHTML = `<div class="empty">${isMint ? 'Minting history appears once the first block is mined.' : 'Price history starts when an exchange pool is confirmed.'}</div>`;
     return;
   }
   TOKEN_CHART_VIEW = TOKEN_CHART_VIEW || defaultTokenChartView(allPoints);
@@ -1467,10 +1473,14 @@ function renderTokenPriceChart(container, token, rawPoints) {
   const rangeButtons = TOKEN_CHART_RANGES.map(range =>
     `<button type="button" class="chart-range-btn${TOKEN_CHART_INTERVAL === range.seconds ? ' active' : ''}" data-chart-range="${range.key}">${range.label}</button>`
   ).join('');
-  container.innerHTML = `<div class="price-chart-head"><strong>Confirmed price history</strong>
-      <span class="price-chart-summary">Current ${escapeHtml(compactPrice(current))} HLX &middot; Low ${escapeHtml(compactPrice(low))} &middot; High ${escapeHtml(compactPrice(high))} &middot; <strong class="chart-trend ${trend}">${change >= 0 ? '+' : ''}${escapeHtml(change.toFixed(2))}%</strong></span></div>
+  const headTitle = isMint ? 'HLX minted over time' : 'Confirmed price history';
+  const summary = isMint
+    ? `Total minted <strong>${escapeHtml(compactPrice(current))} HLX</strong> &middot; +${escapeHtml(compactPrice(Math.max(0, current - first)))} HLX in view`
+    : `Current ${escapeHtml(compactPrice(current))} HLX &middot; Low ${escapeHtml(compactPrice(low))} &middot; High ${escapeHtml(compactPrice(high))} &middot; <strong class="chart-trend ${trend}">${change >= 0 ? '+' : ''}${escapeHtml(change.toFixed(2))}%</strong>`;
+  container.innerHTML = `<div class="price-chart-head"><strong>${escapeHtml(headTitle)}</strong>
+      <span class="price-chart-summary">${summary}</span></div>
     <div class="price-chart-controls">
-      <div class="price-chart-ranges" role="group" aria-label="Candle interval">${rangeButtons}</div>
+      <div class="price-chart-ranges" role="group" aria-label="Candle interval">${rangeButtons}<button type="button" class="chart-range-btn" data-chart-fit title="Zoom out so every candle fits in the view at once">Fit all</button></div>
       <label class="chart-start-control">Start
         <input id="token-chart-start" type="datetime-local" step="1" min="${toLocalDatetimeValue(chartEarliest)}" max="${toLocalDatetimeValue(chartLatest)}" value="${toLocalDatetimeValue(start)}" aria-label="Choose the date and time the chart starts" />
       </label>
@@ -1484,7 +1494,7 @@ function renderTokenPriceChart(container, token, rawPoints) {
       </label>
     </div>
     <div class="chart-scroll"><div class="chart-viewport" style="height:${TOKEN_CHART_HEIGHT}px;width:${TOKEN_CHART_WIDTH}px">
-      <svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(token.symbol)} price in HLX over time">
+      <svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${isMint ? 'HLX minted over time' : escapeHtml(token.symbol) + ' price in HLX over time'}">
         ${grid}${timeGrid}${candleMarkup}
         <line class="chart-crosshair" data-chart-cross-x y1="${top}" y2="${height - bottom}" visibility="hidden" />
         <line class="chart-crosshair" data-chart-cross-y x1="${left}" x2="${width - right}" visibility="hidden" />
@@ -1493,8 +1503,8 @@ function renderTokenPriceChart(container, token, rawPoints) {
       <div class="chart-tooltip"></div>
     </div></div>
     <div class="chart-resize-handle" role="separator" aria-label="Drag to resize chart" tabindex="0"></div>
-    <div class="chart-help token-address"><span>${realUpdates} confirmed market update${realUpdates === 1 ? '' : 's'} in view</span><span>Drag to pan &middot; scroll to zoom &middot; double-click to reset</span></div>`;
-  bindTokenChartInteractions(container, allPoints, { width, height, left, right, top, bottom, start, end, points: candles, low, high });
+    <div class="chart-help token-address"><span>${realUpdates} ${isMint ? `block${realUpdates === 1 ? '' : 's'}` : `confirmed market update${realUpdates === 1 ? '' : 's'}`} in view</span><span>Drag to pan &middot; scroll to zoom &middot; double-click to reset</span></div>`;
+  bindTokenChartInteractions(container, allPoints, { width, height, left, right, top, bottom, start, end, points: candles, low, high, mint: isMint });
 }
 
 async function loadTokenPriceChart(token) {
@@ -1507,6 +1517,20 @@ async function loadTokenPriceChart(token) {
   } catch (error) {
     if (MARKET_MINT === token.mint_address) {
       container.innerHTML = `<div class="empty">${escapeHtml(error.message || 'Could not load price history.')}</div>`;
+    }
+  }
+}
+
+async function loadHlxMintChart() {
+  const container = document.getElementById('token-price-chart');
+  if (!container) return;
+  try {
+    const result = await api('GET', '/network/mint_history');
+    if (MARKET_MINT !== 'HLX') return;
+    renderTokenPriceChart(container, HLX_MINT_SUBJECT, result.points || []);
+  } catch (error) {
+    if (MARKET_MINT === 'HLX') {
+      container.innerHTML = `<div class="empty">${escapeHtml(error.message || 'Could not load minting history.')}</div>`;
     }
   }
 }
@@ -1776,7 +1800,12 @@ function renderNativeAsset() {
       <div class="native-supply-head"><span>Supply issued</span><strong>${escapeHtml(issuedPercent.toFixed(6))}%</strong></div>
       <div class="native-supply-track"><span style="width:${Math.max(0.15, issuedPercent)}%"></span></div>
     </div>
-    <div class="alert alert-info" style="margin-top:16px">HLX is the network's pricing currency, so its value in HLX is always 1. A price-against-itself graph would be flat. HLX is used to buy tokens and fund exchange pools.</div>`;
+    <div class="card" style="margin-top:16px;padding:18px">
+      <div class="card-title">HLX minted over time</div>
+      <div class="token-address" style="margin-bottom:10px">HLX has no price against itself, so instead of buying and selling this chart tracks how much HLX has been mined into existence. Each candle's height is the amount minted in that interval; the rising line is the total supply climbing toward the ${escapeHtml(maximum.toLocaleString())} HLX cap.</div>
+      <div id="token-price-chart" class="price-chart-card"><div class="empty">Loading&hellip;</div></div>
+    </div>`;
+  loadHlxMintChart();
 }
 
 function renderMarketToken(token) {
@@ -2211,6 +2240,20 @@ document.getElementById('token-market-detail').addEventListener('change', event 
 
 // Candle interval buttons (Minute / Hour / Day / Month / Auto).
 document.getElementById('token-market-detail').addEventListener('click', event => {
+  // "Fit all": zoom out so every candle is visible at once. Keep the chosen
+  // candle interval, but if that granularity would pack too many candles across
+  // the full history to render/read, fall back to auto candle sizing.
+  if (event.target.closest('[data-chart-fit]')) {
+    const container = document.getElementById('token-price-chart');
+    if (!container || !TOKEN_CHART_TOKEN) return;
+    if (TOKEN_CHART_INTERVAL) {
+      const { earliest, latest } = tokenChartBounds(TOKEN_CHART_POINTS);
+      if (Math.ceil((latest - earliest) / TOKEN_CHART_INTERVAL) > 1000) TOKEN_CHART_INTERVAL = null;
+    }
+    TOKEN_CHART_VIEW = null; // null view = default framing across the whole history
+    renderTokenPriceChart(container, TOKEN_CHART_TOKEN, TOKEN_CHART_POINTS);
+    return;
+  }
   const button = event.target.closest('[data-chart-range]');
   if (!button) return;
   const container = document.getElementById('token-price-chart');

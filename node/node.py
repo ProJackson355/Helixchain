@@ -965,6 +965,40 @@ def network_history(limit: int = 60):
     }
 
 
+@app.get("/network/mint_history")
+def network_mint_history(limit: int = 1500):
+    """Per-block cumulative HLX supply, for the native minting chart.
+
+    Read-only: sums each block's mining reward (the final SYSTEM transaction) into
+    a running total so the wallet can draw how much HLX has been minted over time.
+    Long chains are evenly sampled down to `limit` points; the final block is
+    always included so the latest supply is exact. Does not touch consensus.
+    """
+    chain = blockchain.chain
+    n = len(chain)
+    limit = max(2, min(6000, int(limit)))
+    total_blocks = n - 1  # exclude the transactionless genesis block
+    step = max(1, (total_blocks + limit - 1) // limit) if total_blocks > 0 else 1
+    points = []
+    cumulative = 0
+    for index in range(1, n):
+        block = chain[index]
+        reward = block.transactions[-1].amount if block.transactions else 0
+        cumulative += reward
+        if (index - 1) % step == 0 or index == n - 1:
+            points.append({
+                "height": index,
+                "timestamp": block.timestamp,
+                "reward": reward,
+                "supply": cumulative,
+            })
+    return {
+        "points": points,
+        "max_supply": blockchain.max_supply,
+        "total_supply": cumulative,
+    }
+
+
 @app.get("/history/{address}")
 def get_history(address: str, include_pending: bool = True, offset: int = 0, limit: int = DEFAULT_PAGE_SIZE):
     try:

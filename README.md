@@ -4,12 +4,18 @@ Helix is an educational proof-of-work cryptocurrency project with encrypted wall
 
 ## Updates
 
+### 2026-07-26 (block-1 relaunch)
+
+- **Fresh genesis with every rule active from block 1.** The chain was reset and all historical phase-in heights collapsed to 1: a flat **10 HLX** reward per block (no 10→2→10 schedule), fine-grained difficulty seeded at **5.5** toward 10-minute blocks, **retargeting every 100 blocks** (`difficulty_adjustment_interval` = 100, first retarget at block 101, no reset height), and tokens, liquidity pools, atomic swaps, NFTs, and the native HLX DAD identity all active from block 1. This is a consensus break — every node must reset chain data and run this build. Previous chain data is preserved under `chain_backup_*/`.
+
 ### 2026-07-26
 
 - **NFTs.** Two new consensus transactions, `nft_mint` and `nft_transfer`, back real one-of-a-kind tokens: each NFT has a unique id, a creator, a single explicit owner (not a fungible balance), on-chain metadata (name, description, image, traits) pinned by a signed SHA-256 content hash, and a creator royalty for a future marketplace. Only the owner can transfer; forged ids, tampered metadata, and double mints are rejected. New read routes `GET /nfts`, `GET /nft/{id}` (with provenance history), and `GET /nfts/owner/{address}`, plus a wallet **NFTs** tab to create, view a gallery of, and transfer NFTs. Update every node — it is a consensus feature.
 - **Block-timestamp fix.** Fast, low-difficulty blocks that share a clock tick (or miners that stamp whole seconds) were wrongly rejected as "another miner won this height." A child block may now sit up to a small tolerance behind its parent (still capped to the near future), and `/mining/submit` now returns the **actual** rejection reason instead of a vague catch-all. Consensus rule — update all nodes.
 - **Wallet quality-of-life.** Payment-request **QR codes and shareable links** (address + amount), an in-app **camera QR scanner** on Send, a saved-contacts **address book**, a **confirmation-depth** counter on mined transactions, opt-in **desktop notifications** when a pending transaction confirms, **installable PWA** (desktop and mobile, offline-capable), and an **Explorer** tab for browsing blocks, transactions, and addresses with a network-difficulty chart.
 - **Auto-checkpoints.** The node periodically records a checkpoint at a safely buried height to harden deep history against long-range reorgs, with no manual configuration.
+- **Difficulty retarget interval change.** The fine-difficulty retarget now runs every 10 blocks through block 50 and every **100 blocks from block 50 onward** (`difficulty_interval_change_height` = 50, `difficulty_new_adjustment_interval` = 100); the window ending at block 50 is a one-time shorter transition. Boundaries below the change height keep the original 10-block cadence so earlier blocks stay valid. Consensus rule — set the change height above the current chain tip and upgrade all nodes together.
+- **HLX minting chart.** The Helix (HLX) detail view now shows a candlestick chart of coin issuance over time — reusing the token-chart engine (interval picker, pan, zoom, resize) but plotting cumulative minted supply instead of a pool price, so each candle's height is the HLX minted in that interval. Backed by a new read-only `GET /network/mint_history`.
 
 ### 2026-07-24
 
@@ -50,7 +56,7 @@ vary a nonce until the hash falls under the target; a smaller target is harder.
 Helix uses a fine-grained numeric target, so difficulty is continuous instead of
 jumping in 16x steps: `difficulty = 64 - log16(target + 1)`, and it may be
 fractional. The chain seeds at difficulty **5.5** from block 1 and retargets
-every 10 blocks toward a **10-minute** average block time. Each adjustment scales
+every 100 blocks toward a **10-minute** average block time. Each adjustment scales
 with how far the recent average was from target (a burst of very fast blocks
 hardens far more than slightly-fast ones), bounded to a large but finite move per
 window (`fine_max_adjust_factor`), with no upper cap and a floor at the minimum
@@ -249,13 +255,11 @@ requirements are the authoritative compatibility reference.
 The browser wallet no longer mines blocks. Its Send tab still lists pending
 transactions and allows their original sender to cancel them before mining.
 
-Before block 161, the historical dynamic-difficulty rules remain part of chain
-validation. Block 161 receives a one-time reset to difficulty 3. Blocks 161
-through 170 stay at 3 so the network can collect one complete post-reset
-window. Beginning with block 171, difficulty can move by one hexadecimal step
-every 10 blocks: it rises when the window average is below 80 seconds and falls
-when the average is above 160 seconds. The target is probabilistic, so an
-individual block can take more or less than 160 seconds.
+On the relaunched (block-1) chain, difficulty uses the fine-grained numeric
+target from block 1, seeded at 5.5 and retargeting every 100 blocks toward a
+10-minute average (the first retarget is at block 101); there is no reset
+height. The target is probabilistic, so an individual block can take more or
+less than 10 minutes.
 
 ## Mining pools
 
@@ -342,16 +346,14 @@ peers relay the proof so the same transaction is not immediately reintroduced.
 
 Helix does not claim wire compatibility with Solana. In Solana terminology, DAD maps most closely to the mint authority. Solana also supports separate freeze and metadata-update authorities; those are intentionally not combined into the current Helix consensus rules.
 
-This release uses peer protocol version 10. All nodes participating in the same network must upgrade and restart before mining or accepting block 200, when atomic token swaps activate. The historical difficulty reset occurred at block 161, difficulty stayed at 3 through block 170, and automatic 10-block adjustment resumed at block 171 using a 160-second target. Prior blocks are not rewritten. Blocks 0 through 89 retain their historical 10 HLX reward, blocks 90 through 299 pay 2 HLX, and block 300 onward pays 10 HLX. Consensus caps the total native supply at 20,000,000 HLX.
+This release uses peer protocol version 10. The chain has been relaunched from a fresh genesis with every rule active from block 1: a flat 10 HLX reward per block, fine-grained difficulty seeded at 5.5 retargeting every 100 blocks toward a 10-minute average (first retarget at block 101, no reset height), and tokens, liquidity pools, atomic token-to-token swaps, NFTs, and the native HLX DAD identity all active from block 1. Consensus caps the total native supply at 20,000,000 HLX. Because this is a consensus break, every node must reset its chain data and run this build; earlier chain data is preserved under `chain_backup_*/`.
 
-At block 300, `9d7c721b209cee99a8158c524fa433ead9236781` becomes
+From block 1, `9d7c721b209cee99a8158c524fa433ead9236781` is
 the protocol-defined native HLX DAD governance identity. It has no mint power:
-all new HLX remains mining-only, the reward schedule remains consensus-controlled,
-and the DAD cannot bypass or raise the 20,000,000 HLX cap. This activation does
-not rewrite or reset historical blocks.
-On the existing mainnet chain, the metadata snapshot rule activates at block 41;
-the token exchange activates at block 41, and the earlier SLOP mint remains valid
-with its original block hash.
+all new HLX remains mining-only, the reward remains consensus-controlled,
+and the DAD cannot bypass or raise the 20,000,000 HLX cap. The token metadata
+snapshot rule, the token exchange, atomic swaps, and NFT mint/transfer are all
+active from block 1 as well.
 
 ## Performance improvements in 0.7.0
 
