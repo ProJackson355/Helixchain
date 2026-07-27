@@ -16,8 +16,11 @@ proportionally to the valid shares submitted during that round.
 
 1. Windows: double-click `setup-pool.bat`. Linux/macOS: run
    `bash start-pool.sh` or `python3 install_pool.py`.
-2. Enter the dedicated pool payout wallet's 12-word seed. The GUI keeps it in
-   memory and never writes it to the settings file or logs.
+2. Enter the dedicated pool payout wallet's 12-word seed and select where the
+   wallet was created. Choose **Helix website wallet** for a wallet made at
+   wallet.hlxchain.com (the default), or **Python/CLI BIP-39 wallet** for one
+   made by the Python wallet tools. These formats derive different addresses.
+   The GUI keeps the seed in memory and never writes it to settings or logs.
 3. Enter one or more Helix node URLs, separated by commas. The first is used for
    work; solved blocks and payouts fail over across the list.
 4. Choose the pool port, operator fee, share-difficulty reduction, and minimum
@@ -51,7 +54,8 @@ that URL automatically.
 ## Manual setup
 
 Copy `pool.env.example` values into your terminal environment, replace the seed,
-install `requirements.txt`, and run `python run_pool.py`. The API is available
+set `HELIX_POOL_SEED_FORMAT=web` for a website wallet or `bip39` for a Python
+wallet, install `requirements.txt`, and run `python run_pool.py`. The API is available
 at `/pool/info`, `/pool/work`, `/pool/submit`, and `/pool/stats`.
 
 Never publish the seed phrase, Cloudflare token, `.venv`, or local settings.
