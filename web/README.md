@@ -21,6 +21,31 @@ every wallet, newest first. The personal **History** tab remains scoped to the
 unlocked wallet. Selecting any Activity row opens its complete transaction and
 block details.
 
+The **NFTs** tab separates the active wallet's collection, NFT management,
+global discovery, and NFT creation. Discovery includes NFTs created by other wallets and exposes
+their ownership, provenance, metadata, traits, listing price, highest bid, and
+last confirmed sale. Owners can list, cancel, transfer, or accept a bid; other
+wallets can place escrow-backed bids, cancel their own bids, or buy at the ask.
+Manage NFTs lets an owner create, edit, or cancel a fixed-price listing without
+discarding its active bids, view all bids from highest to lowest, and accept a
+selected bid. The creator can edit the royalty only before the NFT's first
+transfer or sale; that first ownership change locks it permanently.
+Every NFT action is signed locally by the acting wallet's private key. The key
+is never sent to the node. The current release uses peer protocol 14,
+so every node must be upgraded and restarted before using them.
+
+Every newly submitted transfer, token action, and NFT action includes the
+network's signed transaction fee (currently 1 HLX). The confirming miner
+receives the block's fees in addition to the mining subsidy. Fees move existing
+HLX and do not count as newly issued supply. Fee-less legacy transactions stop
+being valid at block 200, so deploy protocol 14 to every node before activation.
+
+The secp256k1 implementation used to sign transactions is pinned and bundled
+locally as `secp256k1.js`; the production wallet does not download executable
+signing code from a CDN. Production `HELIX_NODE_URL` entries must use HTTPS.
+Plain HTTP is accepted only for `localhost`, `127.0.0.1`, or `::1` during local
+Wrangler development.
+
 The wallet includes the custom-token interface. Token definitions and balances
 come from the node's confirmed blockchain state; a newly submitted token will
 appear after its creation transaction is mined. Each token has an MNT identifier

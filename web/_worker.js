@@ -3,6 +3,7 @@ const PUBLIC_ROUTES = [
   ["GET", /^\/tokens$/],
   ["GET", /^\/nfts$/],
   ["GET", /^\/nft\/[0-9a-f]{40}$/],
+  ["GET", /^\/nft\/[0-9a-f]{40}\/market\/history$/],
   ["GET", /^\/nfts\/owner\/[0-9a-f]{40}$/],
   ["GET", /^\/token\/[0-9a-f]{40}$/],
   ["GET", /^\/token\/[0-9a-f]{40}\/market\/history$/],
@@ -73,8 +74,11 @@ function nodeBases(rawValue) {
       throw new Error("Every HELIX_NODE_URL entry must be a URL string");
     }
     const base = new URL(value.trim());
-    if (!/^https?:$/.test(base.protocol)) {
-      throw new Error("HELIX_NODE_URL entries must use http or https");
+    const loopbackHttp = base.protocol === "http:" && [
+      "localhost", "127.0.0.1", "[::1]",
+    ].includes(base.hostname.toLowerCase());
+    if (base.protocol !== "https:" && !loopbackHttp) {
+      throw new Error("HELIX_NODE_URL entries must use HTTPS except for local development loopback URLs");
     }
     base.hash = "";
     base.search = "";
@@ -185,7 +189,8 @@ export default {
     const originalClientIp = request.headers.get("cf-connecting-ip");
     const headers = new Headers(request.headers);
     for (const name of [
-      "host", "origin", "cf-connecting-ip", "cf-ray", "cf-visitor",
+      "host", "origin", "cookie", "authorization", "proxy-authorization",
+      "referer", "cf-access-jwt-assertion", "cf-connecting-ip", "cf-ray", "cf-visitor",
       "x-forwarded-for", "x-forwarded-proto", "x-helix-api-key", "x-helix-client-ip",
     ]) {
       headers.delete(name);

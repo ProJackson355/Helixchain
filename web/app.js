@@ -28,7 +28,7 @@ const WORDS = BIP39.split(' ');
 let _secp256k1Promise = null;
 function getSecp256k1() {
   if (!_secp256k1Promise) {
-    _secp256k1Promise = import('https://esm.sh/@noble/curves@2.2.0/secp256k1.js')
+    _secp256k1Promise = import('/secp256k1.js?v=2.2.0')
       .then(m => m.secp256k1);
   }
   return _secp256k1Promise;
@@ -101,10 +101,10 @@ async function exportPublicKeyPEM(publicKeyCompressed) {
 
 // Sign transaction data: returns hex-encoded DER signature.
 // The payload must match Python's compact json.dumps(sort_keys=True) exactly.
-function transactionPayload(sender, receiver, amount) {
+function transactionPayload(sender, receiver, amount, fee) {
   const amt = parseInt(amount);
   // Match Python json.dumps(sort_keys=True, separators=(",", ":")).
-  return JSON.stringify({ amount: amt, receiver, sender });
+  return JSON.stringify({ amount: amt, fee: Number(fee), receiver, sender });
 }
 
 // Equivalent to Python json.dumps(sort_keys=True, separators=(",", ":")).
@@ -125,6 +125,11 @@ function canonicalJson(value) {
 }
 
 async function signPayload(privateKey, payload) {
+  if (
+    payload && payload.sender && payload.receiver
+    && Object.prototype.hasOwnProperty.call(payload, 'amount')
+    && !Object.prototype.hasOwnProperty.call(payload, 'fee')
+  ) payload.fee = currentTransactionFee();
   const secp256k1 = await getSecp256k1();
   const derSig = secp256k1.sign(
     new TextEncoder().encode(canonicalJson(payload)), privateKey, { format: 'der' });
@@ -138,8 +143,8 @@ async function tokenMintAddress(creator, nonce) {
   return _bytesToHex(new Uint8Array(mintHash)).slice(0, 40);
 }
 
-async function signTransaction(privateKey, sender, receiver, amount) {
-  const payload  = transactionPayload(sender, receiver, amount);
+async function signTransaction(privateKey, sender, receiver, amount, fee) {
+  const payload  = transactionPayload(sender, receiver, amount, fee);
   const enc      = new TextEncoder();
   const secp256k1 = await getSecp256k1();
   // prehash defaults to true, i.e. it signs sha256(payload) — matching
@@ -598,13 +603,12 @@ async function openTransactionDetails(txId) {
     const tx = detail.transaction;
     const status = detail.status || (detail.block === null ? 'pending' : 'confirmed');
     const badge = `<span class="status-badge ${status === 'pending' ? 'pending' : 'confirmed'}">${escapeHtml(status)}</span>`;
-    const isToken = tx.tx_type && tx.tx_type !== 'transfer';
-    const amountDisplay = tx.tx_type === 'token_buy' ? `${tx.amount} HLX spent`
-      : tx.tx_type === 'token_pool_add_hlx' ? `${tx.amount} HLX added`
-      : isToken ? `${tx.amount} token base units` : `${tx.amount} HLX`;
-    const tokenRows = isToken ? `
+    const isAssetAction = tx.tx_type && tx.tx_type !== 'transfer';
+    const amountDisplay = transactionAmountText(tx);
+    const assetRows = isAssetAction ? `
       ${transactionDetailRow('Transaction type', tx.tx_type)}
       ${transactionDetailRow('MNT address', tx.mint_address)}
+      ${transactionDetailRow('NFT ID', tx.nft_id)}
       ${transactionDetailRow('Operation nonce', tx.nonce)}
       ${transactionDetailRow('DAD authority', tx.dad_address)}
       ${transactionDetailRow('Token name', tx.name)}
@@ -621,7 +625,8 @@ async function openTransactionDetails(txId) {
       ${transactionDetailRow('Status', badge, true)}
       ${transactionDetailRow('Transaction ID', tx.id)}
       ${transactionDetailRow('Amount', amountDisplay)}
-      ${tokenRows}
+      ${transactionDetailRow('Network fee', `${tx.fee ?? 0} HLX`)}
+      ${assetRows}
       ${transactionDetailRow('Sender', tx.sender)}
       ${transactionDetailRow('Receiver', tx.receiver)}
       ${transactionDetailRow('Block height', detail.block)}
@@ -679,7 +684,7 @@ function showPanel(name) {
     b.classList.toggle('active', b.dataset.panel === name));
   if (name === 'dashboard') loadDashboard();
   if (name === 'send')      { loadPending(); renderContactOptions(); }
-  if (name === 'nft')       loadMyNfts();
+  if (name === 'nft')       { loadMyNfts(); loadManageNfts(); loadDiscoverNfts(); }
   if (name === 'tokens')    loadTokens();
   if (name === 'history')   loadHistory();
   if (name === 'activity')  loadActivity(ACTIVITY_PAGE);
@@ -722,6 +727,20 @@ document.querySelectorAll('.nav-btn').forEach(b =>
     showPanel(b.dataset.panel);
     setMobileNav(false);
   }));
+
+// Use delegation for the NFT tabs so the controls continue to work if their
+// markup is refreshed or restored by the PWA. This listener is registered with
+// the primary navigation instead of depending on the later NFT data loader.
+document.addEventListener('click', event => {
+  const tab = event.target.closest?.('.nft-tab[data-nft-pane]');
+  if (!tab) return;
+  event.preventDefault();
+  const pane = tab.dataset.nftPane;
+  showNftPane(pane);
+  if (pane === 'discover') loadDiscoverNfts();
+  if (pane === 'wallet') loadMyNfts();
+  if (pane === 'manage') loadManageNfts();
+});
 
 document.querySelectorAll('.auth-tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -1013,6 +1032,8 @@ function updateSendAssetUi() {
   document.getElementById('send-amount-label').textContent = `Amount (${symbol})`;
   document.getElementById('btn-send').textContent = `Send ${symbol}`;
   document.getElementById('send-amount').value = '';
+  const feeLabel = document.getElementById('send-network-fee');
+  if (feeLabel) feeLabel.textContent = `${currentTransactionFee()} HLX`;
   setAlert('send-alert', '');
 }
 
@@ -1048,9 +1069,10 @@ document.getElementById('btn-send').addEventListener('click', async () => {
       const units = Number(amount);
       if (!Number.isSafeInteger(units)) throw new Error('Amount is above the network limit.');
       payload = {
-        sender: S.address, receiver: to, amount: units,
-        signature: await signTransaction(S.privateKey, S.address, to, units),
+        sender: S.address, receiver: to, amount: units, fee: currentTransactionFee(),
       };
+      payload.signature = await signTransaction(
+        S.privateKey, S.address, to, units, payload.fee);
     }
     const publicKeyPem = await exportPublicKeyPEM(S.publicKey);
     payload.public_key = publicKeyPem;
@@ -1082,6 +1104,11 @@ let HLX_BALANCE = 0;
 let HLX_TOTAL_SUPPLY = 0;
 let NETWORK_STATS = {};
 
+function currentTransactionFee() {
+  const fee = Number(NETWORK_STATS.transaction_fee ?? 1);
+  return Number.isSafeInteger(fee) && fee >= 0 ? fee : 1;
+}
+
 function parseTokenAmount(value, decimals, allowZero = false) {
   const input = String(value).trim();
   const match = /^(0|[1-9]\d*)(?:\.(\d+))?$/.exec(input);
@@ -1101,6 +1128,28 @@ function formatTokenAmount(units, decimals) {
   const factor = 10n ** BigInt(decimals);
   const fraction = (amount % factor).toString().padStart(decimals, '0').replace(/0+$/, '');
   return `${amount / factor}${fraction ? `.${fraction}` : ''}`;
+}
+
+const TOKEN_UNIT_AMOUNT_TYPES = new Set([
+  'token_mint', 'token_transfer', 'token_burn', 'token_pool_create',
+  'token_sell', 'token_swap',
+]);
+const HLX_AMOUNT_TYPES = new Set([
+  'transfer', 'token_buy', 'token_pool_add_hlx', 'nft_list', 'nft_bid', 'nft_buy',
+]);
+
+function transactionAmountText(tx, sign = '') {
+  const type = tx.tx_type || 'transfer';
+  if (TOKEN_UNIT_AMOUNT_TYPES.has(type)) {
+    const symbol = tx.symbol || 'token';
+    return `${sign}${formatTokenAmount(tx.amount, Number(tx.decimals || 0))} ${symbol}`;
+  }
+  if (HLX_AMOUNT_TYPES.has(type) || tx.sender === 'SYSTEM' || type === 'reward') {
+    return `${sign}${tx.amount} HLX`;
+  }
+  if (type.startsWith('nft_')) return 'Signed NFT action';
+  if (type.startsWith('token_')) return 'Signed token action';
+  return `${sign}${tx.amount} HLX`;
 }
 
 function swapQuote(amountIn, reserveIn, reserveOut) {
@@ -1188,11 +1237,9 @@ function toLocalDatetimeValue(seconds) {
 
 function chartRangePoints(points, startSeconds, endSeconds) {
   if (!points.length) return [];
-  const inside = points.filter(point => point.timestamp > startSeconds && point.timestamp <= endSeconds);
-  const before = points.filter(point => point.timestamp <= startSeconds).at(-1);
-  const ranged = before
-    ? [{ ...before, timestamp: startSeconds, carried: true }, ...inside]
-    : inside.length ? [{ ...inside[0], timestamp: startSeconds, carried: true }, ...inside] : [];
+  const inside = points.filter(point => point.timestamp >= startSeconds && point.timestamp <= endSeconds);
+  const before = points.filter(point => point.timestamp < startSeconds).at(-1);
+  const ranged = before ? [{ ...before, timestamp: startSeconds, carried: true }, ...inside] : [...inside];
   const latestKnown = ranged.at(-1) || before;
   if (latestKnown && latestKnown.timestamp < endSeconds) {
     ranged.push({ ...latestKnown, timestamp: endSeconds, carried: true });
@@ -1402,11 +1449,19 @@ function renderTokenPriceChart(container, token, rawPoints) {
   TOKEN_CHART_TOKEN = token;
   TOKEN_CHART_POINTS = rawPoints;
   const isMint = !!token.__mint;
-  const allPoints = rawPoints.map(point => ({ ...point, price: isMint ? Number(point.supply) : marketPointPrice(point, token.decimals) }))
+  const isNft = !!token.__nft;
+  const allPoints = rawPoints.map(point => ({
+    ...point,
+    price: isMint ? Number(point.supply) : isNft ? Number(point.price) : marketPointPrice(point, token.decimals),
+  }))
     .filter(point => Number.isFinite(point.price))
     .sort((left, right) => left.timestamp - right.timestamp);
   if (!allPoints.length) {
-    container.innerHTML = `<div class="empty">${isMint ? 'Minting history appears once the first block is mined.' : 'Price history starts when an exchange pool is confirmed.'}</div>`;
+    const emptyMessage = isMint
+      ? 'Minting history appears once the first block is mined.'
+      : isNft ? 'Sale-price history appears after this NFT has a confirmed purchase or accepted bid.'
+      : 'Price history starts when an exchange pool is confirmed.';
+    container.innerHTML = `<div class="empty">${emptyMessage}</div>`;
     return;
   }
   TOKEN_CHART_VIEW = TOKEN_CHART_VIEW || defaultTokenChartView(allPoints);
@@ -1473,7 +1528,7 @@ function renderTokenPriceChart(container, token, rawPoints) {
   const rangeButtons = TOKEN_CHART_RANGES.map(range =>
     `<button type="button" class="chart-range-btn${TOKEN_CHART_INTERVAL === range.seconds ? ' active' : ''}" data-chart-range="${range.key}">${range.label}</button>`
   ).join('');
-  const headTitle = isMint ? 'HLX minted over time' : 'Confirmed price history';
+  const headTitle = isMint ? 'HLX minted over time' : isNft ? 'Confirmed NFT sale history' : 'Confirmed price history';
   const summary = isMint
     ? `Total minted <strong>${escapeHtml(compactPrice(current))} HLX</strong> &middot; +${escapeHtml(compactPrice(Math.max(0, current - first)))} HLX in view`
     : `Current ${escapeHtml(compactPrice(current))} HLX &middot; Low ${escapeHtml(compactPrice(low))} &middot; High ${escapeHtml(compactPrice(high))} &middot; <strong class="chart-trend ${trend}">${change >= 0 ? '+' : ''}${escapeHtml(change.toFixed(2))}%</strong>`;
@@ -1494,7 +1549,7 @@ function renderTokenPriceChart(container, token, rawPoints) {
       </label>
     </div>
     <div class="chart-scroll"><div class="chart-viewport" style="height:${TOKEN_CHART_HEIGHT}px;width:${TOKEN_CHART_WIDTH}px">
-      <svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${isMint ? 'HLX minted over time' : escapeHtml(token.symbol) + ' price in HLX over time'}">
+      <svg class="price-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${isMint ? 'HLX minted over time' : isNft ? escapeHtml(token.name) + ' confirmed sale price in HLX over time' : escapeHtml(token.symbol) + ' price in HLX over time'}">
         ${grid}${timeGrid}${candleMarkup}
         <line class="chart-crosshair" data-chart-cross-x y1="${top}" y2="${height - bottom}" visibility="hidden" />
         <line class="chart-crosshair" data-chart-cross-y x1="${left}" x2="${width - right}" visibility="hidden" />
@@ -1503,7 +1558,7 @@ function renderTokenPriceChart(container, token, rawPoints) {
       <div class="chart-tooltip"></div>
     </div></div>
     <div class="chart-resize-handle" role="separator" aria-label="Drag to resize chart" tabindex="0"></div>
-    <div class="chart-help token-address"><span>${realUpdates} ${isMint ? `block${realUpdates === 1 ? '' : 's'}` : `confirmed market update${realUpdates === 1 ? '' : 's'}`} in view</span><span>Drag to pan &middot; scroll to zoom &middot; double-click to reset</span></div>`;
+    <div class="chart-help token-address"><span>${realUpdates} ${isMint ? `block${realUpdates === 1 ? '' : 's'}` : isNft ? `confirmed sale${realUpdates === 1 ? '' : 's'}` : `confirmed market update${realUpdates === 1 ? '' : 's'}`} in view</span><span>Drag to pan &middot; scroll to zoom &middot; double-click to reset</span></div>`;
   bindTokenChartInteractions(container, allPoints, { width, height, left, right, top, bottom, start, end, points: candles, low, high, mint: isMint });
 }
 
@@ -1785,6 +1840,7 @@ function renderNativeAsset() {
       ${transactionDetailRow('Maximum supply', `${maximum.toLocaleString()} HLX`)}
       ${transactionDetailRow('Remaining mineable', `${remaining.toLocaleString()} HLX`)}
       ${transactionDetailRow('Next block reward', `${NETWORK_STATS.block_reward ?? 2} HLX`)}
+      ${transactionDetailRow('Minimum transaction fee', `${currentTransactionFee()} HLX`)}
       ${transactionDetailRow('Block height', NETWORK_STATS.height ?? '—')}
       ${transactionDetailRow('Next difficulty', NETWORK_STATS.next_difficulty ?? NETWORK_STATS.difficulty ?? '—')}
       ${transactionDetailRow('Target block time', `${NETWORK_STATS.target_block_time_seconds ?? 600} seconds`)}
@@ -1829,7 +1885,7 @@ function renderMarketToken(token) {
       </div>
       <div id="market-swap-quote" class="token-address">Enter an amount for a routed HLX quote.</div>
       <button class="btn btn-primary btn-full mt8" id="btn-market-swap"${swapProtocolActive ? '' : ' disabled'}>Swap ${escapeHtml(token.symbol)}</button>
-      ${swapProtocolActive ? '' : `<div class="alert alert-info mt8">Token-to-token swaps activate at block ${escapeHtml(NETWORK_STATS.token_swap_activation_height ?? 200)}. Upgrade every node to protocol 10 before activation.</div>`}
+      ${swapProtocolActive ? '' : `<div class="alert alert-info mt8">Token-to-token swaps activate at block ${escapeHtml(NETWORK_STATS.token_swap_activation_height ?? 200)}. Upgrade every node to protocol 12 before activation.</div>`}
       <div class="token-address mt8">The swap is atomic and routes through both tokens' HLX pools. The displayed quote includes both 0.3% pool fees.</div>
     </div>` : '';
   const distribution = tokenDistributionStats(token);
@@ -2619,9 +2675,16 @@ async function loadPending() {
         : type === 'token_pool_add_hlx' ? 'Add HLX liquidity'
         : type === 'token_buy' ? 'Buy token'
         : type === 'token_sell' ? 'Sell token'
-        : type === 'token_swap' ? 'Swap tokens' : 'Pending';
-      const amount = ['transfer', 'token_buy', 'token_pool_add_hlx'].includes(type)
-        ? `${tx.amount} HLX` : `${tx.amount} base units`;
+        : type === 'token_swap' ? 'Swap tokens'
+        : type === 'nft_mint' ? 'Mint NFT'
+        : type === 'nft_transfer' ? 'Transfer NFT'
+        : type === 'nft_list' ? 'List NFT'
+        : type === 'nft_cancel_listing' ? 'Cancel NFT listing'
+        : type === 'nft_bid' ? 'Bid on NFT'
+        : type === 'nft_cancel_bid' ? 'Cancel NFT bid'
+        : type === 'nft_accept_bid' ? 'Accept NFT bid'
+        : type === 'nft_buy' ? 'Buy NFT' : 'Pending';
+      const amount = transactionAmountText(tx);
       const cancelButton = tx.sender === S.address && tx.tx_id
         ? `<button class="btn btn-danger btn-sm mt8" type="button" data-cancel-tx-id="${escapeHtml(tx.tx_id)}">Cancel pending</button>`
         : '';
@@ -2697,6 +2760,14 @@ async function loadHistory() {
                   : type === 'token_buy' ? 'Token purchased'
                   : type === 'token_sell' ? 'Token sold'
                   : type === 'token_swap' ? 'Tokens swapped'
+                  : type === 'nft_mint' ? 'NFT minted'
+                  : type === 'nft_transfer' ? (dir === 'in' ? 'NFT received' : 'NFT transferred')
+                  : type === 'nft_list' ? 'NFT listed'
+                  : type === 'nft_cancel_listing' ? 'NFT listing cancelled'
+                  : type === 'nft_bid' ? 'NFT bid escrowed'
+                  : type === 'nft_cancel_bid' ? 'NFT bid refunded'
+                  : type === 'nft_accept_bid' ? 'NFT bid accepted'
+                  : type === 'nft_buy' ? 'NFT purchased'
                   : isSys ? 'Mining Reward' : dir === 'in' ? 'Received' : 'Sent';
       const peer  = isSys ? 'Block reward'
                   : dir === 'in' ? `From: ${short(tx.sender)}` : `To: ${short(tx.receiver)}`;
@@ -2709,7 +2780,7 @@ async function loadHistory() {
           <div class="tx-sub">Block #${escapeHtml(tx.block)} · ${escapeHtml(fmtDate(tx.timestamp))}</div>
         </div>
         <div class="tx-right">
-          <div class="tx-amount ${dir}">${escapeHtml(`${sign}${tx.amount} ${['token_buy', 'token_pool_add_hlx'].includes(type) || !tokenTx ? 'HLX' : 'base units'}`)}</div>
+          <div class="tx-amount ${dir}">${escapeHtml(transactionAmountText(tx, sign))}</div>
           <div class="tx-meta">${escapeHtml(tx.tx_id ? tx.tx_id.slice(0,10)+'…' : '—')}</div>
         </div>
        </div>`;
@@ -2940,10 +3011,17 @@ function renderActivityTransactions(result) {
       : type === 'token_buy' ? 'Bought token'
       : type === 'token_sell' ? 'Sold token'
       : type === 'token_swap' ? 'Swapped tokens'
+      : type === 'nft_mint' ? 'Minted NFT'
+      : type === 'nft_transfer' ? 'Transferred NFT'
+      : type === 'nft_list' ? 'Listed NFT'
+      : type === 'nft_cancel_listing' ? 'Cancelled NFT listing'
+      : type === 'nft_bid' ? 'Bid on NFT'
+      : type === 'nft_cancel_bid' ? 'Cancelled NFT bid'
+      : type === 'nft_accept_bid' ? 'Accepted NFT bid'
+      : type === 'nft_buy' ? 'Bought NFT'
       : type === 'reward' ? 'Mining reward'
       : 'HLX transfer';
-    const amount = type.startsWith('token_') && !['token_buy', 'token_pool_add_hlx'].includes(type)
-      ? `${tx.amount} token base units` : `${tx.amount} HLX`;
+    const amount = transactionAmountText(tx);
     return `<div class="tx-row tx-row-action" role="button" tabindex="0" data-tx-id="${escapeHtml(tx.tx_id || '')}">
       <div class="tx-icon ${tx.sender === 'SYSTEM' ? 'in' : 'out'}">${tx.sender === 'SYSTEM' ? '+' : 'â†’'}</div>
       <div class="tx-body">
@@ -3156,6 +3234,9 @@ function explorerTxLabel(type) {
     token_set_authority: 'Change DAD authority', token_pool_create: 'Create exchange pool',
     token_pool_add_hlx: 'Add HLX liquidity', token_buy: 'Buy token', token_sell: 'Sell token',
     token_swap: 'Swap tokens', token_burn: 'Burn token', transfer: 'HLX transfer',
+    nft_mint: 'Mint NFT', nft_transfer: 'Transfer NFT', nft_list: 'List NFT',
+    nft_cancel_listing: 'Cancel NFT listing', nft_bid: 'Bid on NFT',
+    nft_cancel_bid: 'Cancel NFT bid', nft_accept_bid: 'Accept NFT bid', nft_buy: 'Buy NFT',
   })[type] || (type || 'transfer');
 }
 
@@ -3556,6 +3637,29 @@ function renderNftCard(nft, owned) {
   const traits = attrs.map(a =>
     `<span style="display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:2px 7px;margin:2px 4px 2px 0;font-size:11px"><span style="color:var(--muted)">${escapeHtml(a.trait_type)}:</span> ${escapeHtml(a.value)}</span>`).join('');
   const royalty = Number(nft.royalty_bps || 0) / 100;
+  const bids = Object.values(nft.bids || {}).sort((a, b) => Number(b.amount) - Number(a.amount));
+  const highestBid = bids[0] || null;
+  const ownBid = bids.find(bid => bid.bidder === S.address) || null;
+  const listed = Number.isSafeInteger(Number(nft.listing_price)) && Number(nft.listing_price) > 0;
+  const lastSale = Number(nft.last_sale_price || 0);
+  const marketValue = lastSale > 0
+    ? `${lastSale} HLX (last confirmed sale)`
+    : highestBid
+      ? `${highestBid.amount} HLX (highest escrow-backed bid)`
+      : listed
+        ? `${nft.listing_price} HLX asking price`
+        : 'Not priced yet';
+  const actions = owned
+    ? `<button class="btn btn-ghost btn-sm" type="button" data-nft-transfer="${escapeHtml(nft.nft_id)}">Transfer</button>
+       ${listed
+         ? `<button class="btn btn-danger btn-sm" type="button" data-nft-cancel-listing="${escapeHtml(nft.nft_id)}">Cancel listing</button>`
+         : `<button class="btn btn-primary btn-sm" type="button" data-nft-list="${escapeHtml(nft.nft_id)}">List for HLX</button>`}
+       ${highestBid ? `<button class="btn btn-success btn-sm" type="button" data-nft-accept-bid="${escapeHtml(nft.nft_id)}" data-bidder="${escapeHtml(highestBid.bidder)}">Accept ${escapeHtml(highestBid.amount)} HLX bid</button>` : ''}`
+    : listed
+      ? `<button class="btn btn-success btn-sm" type="button" data-nft-buy="${escapeHtml(nft.nft_id)}">Buy for ${escapeHtml(nft.listing_price)} HLX</button>
+         <button class="btn btn-primary btn-sm" type="button" data-nft-bid="${escapeHtml(nft.nft_id)}">${ownBid ? 'Raise bid' : 'Place bid'}</button>
+         ${ownBid ? `<button class="btn btn-ghost btn-sm" type="button" data-nft-cancel-bid="${escapeHtml(nft.nft_id)}">Cancel my ${escapeHtml(ownBid.amount)} HLX bid</button>` : ''}`
+      : '';
   return `<div class="card" style="margin-bottom:14px">
     <div style="display:flex;gap:14px;align-items:flex-start">
       <img src="${escapeHtml(nft.image)}" alt="${escapeHtml(nft.name)}" style="width:88px;height:88px;border-radius:10px;object-fit:cover;background:var(--surface2);flex-shrink:0">
@@ -3563,10 +3667,15 @@ function renderNftCard(nft, owned) {
         <div style="font-weight:700">${escapeHtml(nft.name)}</div>
         <div style="font-size:12px;color:var(--muted);overflow-wrap:anywhere">${escapeHtml(nft.description)}</div>
         <div style="margin-top:6px">${traits}</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px">ID ${escapeHtml(short(nft.nft_id))} &middot; royalty ${escapeHtml(royalty)}% &middot; owner ${escapeHtml(short(nft.owner))}</div>
+        <div style="font-size:13px;font-weight:700;color:var(--green);margin-top:8px">Market value: ${escapeHtml(marketValue)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:5px">ID ${escapeHtml(short(nft.nft_id))} &middot; royalty ${escapeHtml(royalty)}% &middot; minted in block ${escapeHtml(nft.minted_block ?? '—')}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Creator ${escapeHtml(short(nft.creator))} &middot; owner ${escapeHtml(short(nft.owner))}${highestBid ? ` &middot; ${escapeHtml(bids.length)} active bid${bids.length === 1 ? '' : 's'}` : ''}</div>
       </div>
     </div>
-    ${owned ? `<button class="btn btn-ghost btn-sm" type="button" data-nft-transfer="${escapeHtml(nft.nft_id)}" style="margin-top:10px">Transfer</button>` : ''}
+    <div class="nft-card-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <button class="btn btn-ghost btn-sm" type="button" data-nft-details="${escapeHtml(nft.nft_id)}">Details &amp; price chart</button>
+      ${actions}
+    </div>
   </div>`;
 }
 async function loadMyNfts() {
@@ -3577,27 +3686,294 @@ async function loadMyNfts() {
     const data = await api('GET', `/nfts/owner/${S.address}`);
     const nfts = data.nfts || [];
     gallery.innerHTML = nfts.length ? nfts.map(n => renderNftCard(n, true)).join('')
-      : '<div class="empty">You don\'t own any NFTs yet — create one above.</div>';
+      : '<div class="empty">You don\'t own any NFTs yet.<br><button class="btn btn-primary btn-sm mt8" type="button" data-open-nft-create>Create an NFT</button></div>';
   } catch (_) { gallery.innerHTML = '<div class="empty">Could not load your NFTs.</div>'; }
 }
+function renderManagedNft(nft) {
+  const royalty = Number(nft.royalty_bps || 0) / 100;
+  const bids = Object.values(nft.bids || {})
+    .sort((left, right) => Number(right.amount) - Number(left.amount));
+  const listed = Number.isSafeInteger(Number(nft.listing_price)) && Number(nft.listing_price) > 0;
+  const editable = nft.creator === S.address && nft.owner === S.address && !nft.royalty_locked;
+  const status = editable
+    ? 'You created and still own this NFT. Its royalty can be changed until its first transfer or sale.'
+    : nft.creator !== S.address
+      ? 'You own this NFT, but only its original creator could set the royalty.'
+      : 'Royalty permanently locked after the NFT left its creator.';
+  return `<div class="card" style="margin-bottom:14px">
+    <div style="display:flex;gap:14px;align-items:center">
+      <img src="${escapeHtml(nft.image)}" alt="${escapeHtml(nft.name)}" style="width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--surface2)">
+      <div style="min-width:0;flex:1"><div style="font-weight:700">${escapeHtml(nft.name)}</div>
+        <div style="font-size:11px;color:var(--muted);overflow-wrap:anywhere">${escapeHtml(nft.nft_id)}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">${escapeHtml(status)}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" data-nft-details="${escapeHtml(nft.nft_id)}">Chart</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-top:12px">
+      <div class="field" style="margin:0;min-width:170px;flex:1"><label>Listing price (whole HLX)</label>
+        <input data-nft-listing-price inputmode="numeric" value="${listed ? escapeHtml(nft.listing_price) : ''}" placeholder="Enter an asking price">
+      </div>
+      <button class="btn btn-primary" type="button" data-nft-save-listing="${escapeHtml(nft.nft_id)}">${listed ? 'Update listing' : 'List NFT'}</button>
+      ${listed ? `<button class="btn btn-danger" type="button" data-nft-cancel-listing="${escapeHtml(nft.nft_id)}">Cancel listing</button>` : ''}
+    </div>
+    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="font-weight:700;margin-bottom:8px">All bids (${escapeHtml(bids.length)})</div>
+      ${bids.length ? bids.map((bid, index) => `<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-top:${index ? '1px solid var(--border)' : '0'}">
+        <div><strong>${escapeHtml(bid.amount)} HLX</strong><div style="font:11px monospace;color:var(--muted)">${escapeHtml(bid.bidder)}</div></div>
+        <button class="btn btn-success btn-sm" type="button" data-nft-accept-bid="${escapeHtml(nft.nft_id)}" data-bidder="${escapeHtml(bid.bidder)}">Accept bid</button>
+      </div>`).join('') : '<div class="empty" style="padding:12px">No active bids.</div>'}
+    </div>
+    <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+      <div class="field" style="margin:0;min-width:170px;flex:1"><label>Creator royalty %</label>
+        <input data-nft-royalty-input type="number" min="0" max="100" step="0.01" value="${escapeHtml(royalty)}" ${editable ? '' : 'disabled'}>
+      </div>
+      ${editable ? `<button class="btn btn-primary" type="button" data-nft-set-royalty="${escapeHtml(nft.nft_id)}">Update royalty</button>` : ''}
+    </div>
+  </div>`;
+}
+async function loadManageNfts() {
+  const gallery = document.getElementById('nft-manage-gallery');
+  if (!gallery || !hasActiveSession()) return;
+  gallery.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const data = await api('GET', `/nfts/owner/${S.address}`);
+    const nfts = data.nfts || [];
+    gallery.innerHTML = nfts.length
+      ? nfts.map(renderManagedNft).join('')
+      : '<div class="empty">You do not own any NFTs to manage.</div>';
+  } catch (_) { gallery.innerHTML = '<div class="empty">Could not load NFT management.</div>'; }
+}
+let DISCOVERED_NFTS = [];
+function showNftPane(name) {
+  document.querySelectorAll('.nft-pane').forEach(pane => {
+    const active = pane.id === `nft-pane-${name}`;
+    pane.classList.toggle('active', active);
+    pane.hidden = !active;
+  });
+  document.querySelectorAll('.nft-tab').forEach(tab => {
+    const active = tab.dataset.nftPane === name;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+}
+function renderDiscoveredNfts() {
+  const gallery = document.getElementById('nft-discovery-gallery');
+  if (!gallery) return;
+  const query = document.getElementById('nft-search')?.value.trim().toLowerCase() || '';
+  const items = DISCOVERED_NFTS.filter(nft => !query || [
+    nft.name, nft.description, nft.nft_id, nft.creator, nft.owner,
+  ].some(value => String(value || '').toLowerCase().includes(query)))
+    .sort((left, right) => Number(right.minted_block || 0) - Number(left.minted_block || 0));
+  gallery.innerHTML = items.length
+    ? items.map(nft => renderNftCard(nft, nft.owner === S.address)).join('')
+    : `<div class="empty">${query ? 'No NFTs match that search.' : 'No confirmed NFTs have been created yet.'}</div>`;
+}
+async function loadDiscoverNfts() {
+  const gallery = document.getElementById('nft-discovery-gallery');
+  if (!gallery || !hasActiveSession()) return;
+  gallery.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const data = await api('GET', '/nfts?limit=500');
+    DISCOVERED_NFTS = Array.isArray(data.nfts) ? data.nfts : [];
+    renderDiscoveredNfts();
+  } catch (_) {
+    gallery.innerHTML = '<div class="empty">Could not load NFTs from the blockchain.</div>';
+  }
+}
+
+function closeNftDetails() {
+  const modal = document.getElementById('nft-modal');
+  modal?.classList.remove('open');
+  modal?.setAttribute('aria-hidden', 'true');
+}
+
+async function loadNftPriceChart(nft) {
+  const container = document.getElementById('nft-price-chart');
+  if (!container) return;
+  try {
+    const result = await api('GET', `/nft/${encodeURIComponent(nft.nft_id)}/market/history`);
+    if (document.getElementById('nft-modal')?.dataset.nftId !== nft.nft_id) return;
+    renderTokenPriceChart(container, {
+      mint_address: `NFT:${nft.nft_id}`,
+      name: nft.name,
+      symbol: 'NFT',
+      decimals: 0,
+      __nft: true,
+    }, result.points || []);
+  } catch (error) {
+    container.innerHTML = `<div class="empty">${escapeHtml(error.message || 'Could not load NFT sale history.')}</div>`;
+  }
+}
+
+async function openNftDetails(nftId) {
+  const modal = document.getElementById('nft-modal');
+  const body = document.getElementById('nft-modal-body');
+  if (!modal || !body) return;
+  modal.dataset.nftId = nftId;
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  body.innerHTML = '<div class="empty">Loading NFT&hellip;</div>';
+  document.getElementById('btn-close-nft-modal')?.focus();
+  try {
+    const detail = await api('GET', `/nft/${encodeURIComponent(nftId)}`);
+    const nft = detail.nft;
+    if (!nft || modal.dataset.nftId !== nftId) throw new Error('NFT not found.');
+    const traits = (Array.isArray(nft.attributes) ? nft.attributes : []).map(attribute =>
+      `<span class="nft-detail-trait"><span>${escapeHtml(attribute.trait_type)}:</span> ${escapeHtml(attribute.value)}</span>`
+    ).join('');
+    const history = (detail.history || []).slice().reverse().map(item =>
+      `<button class="nft-history-row" type="button" data-tx-id="${escapeHtml(item.tx_id || '')}">
+        <span>${escapeHtml(String(item.type || '').replaceAll('_', ' '))}</span>
+        <small>Block ${escapeHtml(item.block)} &middot; ${escapeHtml(fmtDate(item.timestamp))}</small>
+      </button>`
+    ).join('');
+    body.innerHTML = `<div class="nft-detail-head">
+        <img src="${escapeHtml(nft.image)}" alt="${escapeHtml(nft.name)}">
+        <div><h3>${escapeHtml(nft.name)}</h3><p>${escapeHtml(nft.description)}</p>
+          <div class="token-address">NFT ID ${escapeHtml(nft.nft_id)}</div>
+          <div class="token-address">Creator ${escapeHtml(nft.creator)}<br>Owner ${escapeHtml(nft.owner)}</div>
+          <div class="nft-detail-traits">${traits || '<span class="token-address">No traits</span>'}</div>
+        </div>
+      </div>
+      <div id="nft-price-chart" class="price-chart-card"><div class="empty">Loading confirmed sale history&hellip;</div></div>
+      <div class="card-title" style="margin-top:18px">On-chain history</div>
+      <div class="nft-detail-history">${history || '<div class="empty">No NFT activity yet.</div>'}</div>`;
+    loadNftPriceChart(nft);
+  } catch (error) {
+    body.innerHTML = `<div class="empty">${escapeHtml(error.message || 'Could not load NFT details.')}</div>`;
+  }
+}
+
+document.addEventListener('click', event => {
+  const details = event.target.closest?.('[data-nft-details]');
+  if (details) openNftDetails(details.dataset.nftDetails);
+});
+document.getElementById('btn-close-nft-modal')?.addEventListener('click', closeNftDetails);
+document.getElementById('nft-modal')?.addEventListener('click', event => {
+  if (event.target.id === 'nft-modal') closeNftDetails();
+});
 document.getElementById('btn-nft-add-attr')?.addEventListener('click', nftAddAttrRow);
 document.getElementById('btn-nft-refresh')?.addEventListener('click', loadMyNfts);
-document.getElementById('nft-gallery')?.addEventListener('click', async event => {
-  const btn = event.target.closest('[data-nft-transfer]');
-  if (!btn || !hasActiveSession()) return;
-  const nftId = btn.dataset.nftTransfer;
-  const to = (prompt('Send this NFT to which address? (40 hex characters)') || '').trim().toLowerCase();
-  if (!to) return;
-  if (!/^[0-9a-f]{40}$/.test(to)) { toast('Invalid recipient address', 'err'); return; }
+document.getElementById('btn-nft-manage-refresh')?.addEventListener('click', loadManageNfts);
+document.getElementById('btn-nft-discover-refresh')?.addEventListener('click', loadDiscoverNfts);
+document.getElementById('nft-search')?.addEventListener('input', renderDiscoveredNfts);
+document.addEventListener('click', event => {
+  if (!event.target.closest('[data-open-nft-create]')) return;
+  showPanel('nft');
+  showNftPane('create');
+});
+
+async function signedNftAction(txType, nftId, receiver, amount, confirmationMessage, extra = {}) {
+  const payload = {
+    tx_type: txType,
+    sender: S.address,
+    receiver,
+    amount,
+    nft_id: nftId,
+    nonce: _hexRandom(16),
+    ...extra,
+  };
+  payload.signature = await signPayload(S.privateKey, payload);
+  payload.public_key = await exportPublicKeyPEM(S.publicKey);
+  const result = await api('POST', '/transaction', payload);
+  if (result.message !== 'Transaction added') {
+    throw new Error(result.message || 'NFT marketplace transaction was rejected.');
+  }
+  watchForConfirmation(result.tx_id, confirmationMessage);
+  toast(`${confirmationMessage} submitted`, 'ok');
+  loadMyNfts();
+  loadManageNfts();
+  loadDiscoverNfts();
+  return result;
+}
+
+document.getElementById('panel-nft')?.addEventListener('click', async event => {
+  if (!hasActiveSession()) return;
+  const action = event.target.closest(
+    '[data-nft-transfer],[data-nft-list],[data-nft-save-listing],[data-nft-cancel-listing],[data-nft-bid],[data-nft-cancel-bid],[data-nft-accept-bid],[data-nft-buy],[data-nft-set-royalty]'
+  );
+  if (!action) return;
+  const nftId = action.dataset.nftTransfer || action.dataset.nftList
+    || action.dataset.nftSaveListing
+    || action.dataset.nftCancelListing || action.dataset.nftBid
+    || action.dataset.nftCancelBid || action.dataset.nftAcceptBid
+    || action.dataset.nftBuy || action.dataset.nftSetRoyalty;
+  action.disabled = true;
   try {
-    const payload = { tx_type: 'nft_transfer', sender: S.address, receiver: to, amount: 0, nft_id: nftId, nonce: _hexRandom(16) };
-    payload.signature = await signPayload(S.privateKey, payload);
-    payload.public_key = await exportPublicKeyPEM(S.publicKey);
-    const result = await api('POST', '/transaction', payload);
-    if (result.message !== 'Transaction added') throw new Error(result.message || 'Transfer rejected.');
-    watchForConfirmation(result.tx_id, 'Your NFT transfer confirmed');
-    toast('NFT transfer submitted', 'ok');
-  } catch (error) { toast(error.message || 'Transfer failed', 'err'); }
+    const detail = await api('GET', `/nft/${nftId}`);
+    const nft = detail.nft;
+    if (!nft) throw new Error('NFT no longer exists.');
+
+    if (action.dataset.nftSaveListing) {
+      if (nft.owner !== S.address) throw new Error('Only the current owner can edit this listing.');
+      const input = action.closest('.card')?.querySelector('[data-nft-listing-price]');
+      const raw = String(input?.value || '').trim();
+      if (!/^[1-9]\d*$/.test(raw)) throw new Error('Listing price must be a positive whole HLX amount.');
+      const price = Number(raw);
+      if (!Number.isSafeInteger(price)) throw new Error('Listing price is above the network limit.');
+      await signedNftAction(
+        'nft_list', nftId, S.address, price,
+        nft.listing_price == null ? 'NFT listing' : 'NFT listing update',
+      );
+    } else if (action.dataset.nftSetRoyalty) {
+      if (nft.creator !== S.address || nft.owner !== S.address || nft.royalty_locked) {
+        throw new Error('This NFT royalty is permanently locked or you are not its creator.');
+      }
+      const input = action.closest('.card')?.querySelector('[data-nft-royalty-input]');
+      const percentage = Number(input?.value);
+      if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+        throw new Error('Royalty must be between 0 and 100%.');
+      }
+      const royaltyBps = Math.round(percentage * 100);
+      if (!confirm(`Change this NFT's creator royalty to ${royaltyBps / 100}%?`)) return;
+      await signedNftAction(
+        'nft_set_royalty', nftId, S.address, 0, 'NFT royalty update',
+        { royalty_bps: royaltyBps },
+      );
+    } else if (action.dataset.nftTransfer) {
+      const to = (prompt('Send this NFT to which address? (40 hex characters)') || '').trim().toLowerCase();
+      if (!to) return;
+      if (!/^[0-9a-f]{40}$/.test(to)) throw new Error('Invalid recipient address.');
+      await signedNftAction('nft_transfer', nftId, to, 0, 'NFT transfer');
+    } else if (action.dataset.nftList) {
+      const raw = (prompt('List this NFT for how many whole HLX?') || '').trim();
+      if (!raw) return;
+      const price = Number(raw);
+      if (!Number.isSafeInteger(price) || price <= 0) throw new Error('Listing price must be a positive whole HLX amount.');
+      await signedNftAction('nft_list', nftId, S.address, price, 'NFT listing');
+    } else if (action.dataset.nftCancelListing) {
+      if (!confirm('Cancel this listing and refund every active bid?')) return;
+      await signedNftAction('nft_cancel_listing', nftId, S.address, 0, 'NFT listing cancellation');
+    } else if (action.dataset.nftBid) {
+      const existing = nft.bids?.[S.address];
+      const raw = (prompt(existing ? `Raise your ${existing.amount} HLX bid to:` : 'Bid how many whole HLX?') || '').trim();
+      if (!raw) return;
+      const bid = Number(raw);
+      if (!Number.isSafeInteger(bid) || bid <= Number(existing?.amount || 0)) {
+        throw new Error('Bid must be a positive whole HLX amount higher than your existing bid.');
+      }
+      await signedNftAction('nft_bid', nftId, nft.owner, bid, 'NFT bid');
+    } else if (action.dataset.nftCancelBid) {
+      if (!confirm('Cancel your bid and return its escrowed HLX?')) return;
+      await signedNftAction('nft_cancel_bid', nftId, S.address, 0, 'NFT bid cancellation');
+    } else if (action.dataset.nftAcceptBid) {
+      const bidder = action.dataset.bidder;
+      const bid = nft.bids?.[bidder];
+      if (!bid) throw new Error('That bid is no longer active.');
+      if (!confirm(`Accept ${bid.amount} HLX from ${short(bidder)}? Ownership will transfer after confirmation.`)) return;
+      await signedNftAction('nft_accept_bid', nftId, bidder, 0, 'NFT bid acceptance');
+    } else if (action.dataset.nftBuy) {
+      const price = Number(nft.listing_price);
+      if (!Number.isSafeInteger(price) || price <= 0) throw new Error('NFT is no longer listed.');
+      if (!confirm(`Buy this NFT for ${price} HLX?`)) return;
+      await signedNftAction('nft_buy', nftId, nft.owner, price, 'NFT purchase');
+    }
+  } catch (error) {
+    toast(error.message || 'NFT action failed', 'err');
+  } finally {
+    action.disabled = false;
+  }
 });
 document.getElementById('btn-nft-create')?.addEventListener('click', async () => {
   if (!hasActiveSession()) return;

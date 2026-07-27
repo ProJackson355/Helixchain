@@ -313,14 +313,14 @@
     }
     .token-layout { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
     .token-tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; }
-    .token-tab {
+    .token-tab, .nft-tab {
       border:1px solid var(--border); background:var(--surface2); color:var(--muted);
       border-radius:8px; padding:9px 14px; cursor:pointer; font:inherit; font-weight:700;
       white-space:nowrap;
     }
-    .token-tab:hover, .token-tab.active { color:var(--text); border-color:var(--accent); background:#1d2340; }
-    .token-pane { display:none; }
-    .token-pane.active { display:block; }
+    .token-tab:hover, .token-tab.active, .nft-tab:hover, .nft-tab.active { color:var(--text); border-color:var(--accent); background:#1d2340; }
+    .token-pane, .nft-pane { display:none; }
+    .token-pane.active, .nft-pane.active { display:block; }
     .token-list { display:grid; grid-template-columns:1fr; gap:10px; }
     #token-discovery-list.token-list { grid-template-columns:1fr; gap:8px; }
     .token-card {
@@ -514,11 +514,28 @@
     .status-badge { display: inline-block; border-radius: 20px; padding: 2px 9px; font-family: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase; }
     .status-badge.confirmed { color: var(--green); border: 1px solid var(--green); background: #0d2d1e; }
     .status-badge.pending { color: var(--orange); border: 1px solid var(--orange); background: #2e1800; }
+    .nft-detail-head { display:grid; grid-template-columns:160px minmax(0,1fr); gap:18px; align-items:start; }
+    .nft-detail-head > img { width:160px; height:160px; border-radius:12px; object-fit:cover; background:var(--surface2); }
+    .nft-detail-head h3 { font-size:21px; margin-bottom:5px; }
+    .nft-detail-head p { color:var(--muted); font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .nft-detail-traits { display:flex; flex-wrap:wrap; gap:5px; margin-top:10px; }
+    .nft-detail-trait { border:1px solid var(--border); background:var(--surface2); border-radius:7px; padding:3px 8px; font-size:11px; }
+    .nft-detail-trait span { color:var(--muted); }
+    .nft-detail-history { display:grid; gap:6px; }
+    .nft-history-row { display:flex; justify-content:space-between; gap:12px; width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); text-align:left; cursor:pointer; }
+    .nft-history-row span { text-transform:capitalize; }
+    .nft-history-row small { color:var(--muted); }
     @media(max-width:560px) {
       .modal-backdrop { padding: 10px; }
+      .modal-card { max-height:calc(100dvh - 20px); }
+      .modal-body { padding:16px; }
       .detail-grid { grid-template-columns: 1fr; }
       .detail-label { padding-bottom: 3px; }
       .detail-value { padding-top: 3px; }
+      .nft-detail-head { grid-template-columns:96px minmax(0,1fr); gap:12px; }
+      .nft-detail-head > img { width:96px; height:96px; }
+      .nft-history-row { flex-direction:column; gap:2px; }
+      .nft-card-actions .btn { flex:1 1 130px; }
     }
   </style>
 </head>
@@ -759,6 +776,9 @@
       <label id="send-amount-label">Amount (HLX)</label>
       <input id="send-amount" inputmode="decimal" placeholder="0" />
     </div>
+    <div style="display:flex;justify-content:space-between;color:var(--muted);font-size:13px;margin:-3px 0 12px">
+      <span>Network fee</span><strong id="send-network-fee" style="color:var(--text)">1 HLX</strong>
+    </div>
     <button class="btn btn-primary btn-full mt8" id="btn-send">Send HLX</button>
   </div>
   <div class="card" style="max-width:520px">
@@ -947,27 +967,62 @@
 
 <!-- DOCS -->
 <div id="panel-nft" class="panel">
-  <div class="card">
-    <div class="card-title">Create an NFT</div>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Mint a unique, one-of-a-kind NFT that you own on-chain. The image is hosted at an HTTPS URL; its details (and a content hash) are recorded on the blockchain.</p>
-    <div id="nft-create-alert"></div>
-    <div class="field"><label>Name</label><input id="nft-name" maxlength="64" placeholder="My artwork" autocomplete="off" /></div>
-    <div class="field"><label>Description</label><textarea id="nft-description" maxlength="1000" placeholder="What is this NFT?"></textarea></div>
-    <div class="field"><label>Image URL (HTTPS)</label><input id="nft-image" placeholder="https://…/image.png" autocomplete="off" /></div>
-    <div class="field"><label>Creator royalty % (0–100, optional)</label><input id="nft-royalty" inputmode="decimal" placeholder="0" /></div>
-    <div class="field">
-      <label>Traits (optional)</label>
-      <div id="nft-attrs"></div>
-      <button class="btn btn-ghost btn-sm" id="btn-nft-add-attr" type="button" style="margin-top:6px">+ Add trait</button>
-    </div>
-    <button class="btn btn-primary btn-full" id="btn-nft-create" type="button">Create NFT</button>
+  <div class="token-tabs" role="tablist" aria-label="NFT sections">
+    <button class="nft-tab active" type="button" role="tab" aria-selected="true" aria-controls="nft-pane-wallet" data-nft-pane="wallet">My NFTs</button>
+    <button class="nft-tab" type="button" role="tab" aria-selected="false" aria-controls="nft-pane-manage" tabindex="-1" data-nft-pane="manage">Manage NFTs</button>
+    <button class="nft-tab" type="button" role="tab" aria-selected="false" aria-controls="nft-pane-discover" tabindex="-1" data-nft-pane="discover">Discover</button>
+    <button class="nft-tab" type="button" role="tab" aria-selected="false" aria-controls="nft-pane-create" tabindex="-1" data-nft-pane="create">Create NFT</button>
   </div>
-  <div class="card">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <div class="card-title" style="margin-bottom:0">My NFTs</div>
-      <button class="btn btn-ghost btn-sm" id="btn-nft-refresh" type="button">↻ Refresh</button>
+
+  <div id="nft-pane-wallet" class="nft-pane active" role="tabpanel">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">My NFTs</div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-refresh" type="button">↻ Refresh</button>
+      </div>
+      <div id="nft-gallery"><div class="empty">Loading&hellip;</div></div>
     </div>
-    <div id="nft-gallery"><div class="empty">Loading&hellip;</div></div>
+  </div>
+
+  <div id="nft-pane-manage" class="nft-pane" role="tabpanel" hidden>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Manage NFTs</div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-manage-refresh" type="button">&#8635; Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">A creator can change an NFT's royalty only while they still own it and before its first transfer or sale. Once ownership leaves the creator, the royalty is permanently locked.</p>
+      <div id="nft-manage-gallery"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="nft-pane-discover" class="nft-pane" role="tabpanel" hidden>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Discover NFTs</div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-discover-refresh" type="button">↻ Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Browse every confirmed NFT on Helix, including NFTs created and owned by other wallets. Bids lock real HLX until they are cancelled, refunded, or accepted.</p>
+      <div class="field"><label>Search NFTs</label><input id="nft-search" type="text" placeholder="Name, description, NFT ID, creator, or owner" autocomplete="off" /></div>
+      <div id="nft-discovery-gallery"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="nft-pane-create" class="nft-pane" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card-title">Create an NFT</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Mint a unique, one-of-a-kind NFT that you own on-chain. The image is hosted at an HTTPS URL; its details (and a content hash) are recorded on the blockchain.</p>
+      <div id="nft-create-alert"></div>
+      <div class="field"><label>Name</label><input id="nft-name" maxlength="64" placeholder="My artwork" autocomplete="off" /></div>
+      <div class="field"><label>Description</label><textarea id="nft-description" maxlength="1000" placeholder="What is this NFT?"></textarea></div>
+      <div class="field"><label>Image URL (HTTPS)</label><input id="nft-image" placeholder="https://…/image.png" autocomplete="off" /></div>
+      <div class="field"><label>Creator royalty % (0–100, optional)</label><input id="nft-royalty" inputmode="decimal" placeholder="0" /></div>
+      <div class="field">
+        <label>Traits (optional)</label>
+        <div id="nft-attrs"></div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-add-attr" type="button" style="margin-top:6px">+ Add trait</button>
+      </div>
+      <button class="btn btn-primary btn-full" id="btn-nft-create" type="button">Create NFT</button>
+    </div>
   </div>
 </div>
 
@@ -1002,7 +1057,7 @@
       <div class="card-title">How the blockchain works</div>
       <p><strong>Blocks and the chain.</strong> The chain starts with a fixed, empty genesis block. Every block after it holds a list of transactions plus exactly one mining reward, is identified by its SHA-256 hash, and points back to its parent by that parent's hash. Change anything in a block and its hash changes, which breaks every block after it — that is what makes the history tamper-evident.</p>
       <p><strong>Proof of work and difficulty.</strong> A block is only valid if its hash, read as a number, is less than or equal to the current <strong>target</strong>: <code>int(hash, 16) &le; target</code>. Miners repeatedly change a nonce until the hash falls under the target. A smaller target is harder to hit. Helix uses a fine-grained target, so difficulty is continuous rather than jumping in 16&times; steps: <code>difficulty = 64 &minus; log16(target + 1)</code>, and it can be fractional. The chain seeds at difficulty <strong>5.5</strong> from block&nbsp;1 and retargets every <strong>100 blocks</strong> toward a <strong>10-minute</strong> average block time (the first retarget is at block&nbsp;101). The size of each adjustment scales with how far the recent average was from target — a run of very fast blocks hardens far more than blocks that were only slightly quick — bounded to a large-but-finite move per window, with no upper cap and a floor at the minimum difficulty.</p>
-      <p><strong>Transactions.</strong> Transactions are signed with secp256k1 keys that live only in your browser (the network is non-custodial — no server holds your keys). Besides a plain HLX transfer, transactions can create a token, mint, transfer, change a token's DAD authority, create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn, and can <strong>mint or transfer a one-of-a-kind NFT</strong>. A submitted transaction sits in the mempool as <strong>pending</strong> until a miner includes it in a block.</p>
+      <p><strong>Transactions.</strong> Transactions are signed with secp256k1 keys that live only in your browser (the network is non-custodial — no server holds your keys). Besides a plain HLX transfer, transactions can create a token, mint, transfer, change a token's DAD authority, create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn, and can mint, transfer, list, bid on, or purchase a one-of-a-kind NFT. A submitted transaction sits in the mempool as <strong>pending</strong> until a miner includes it in a block.</p>
       <p><strong>Mining and rewards.</strong> Mining happens on the miner's own hardware, not the node: a miner pulls a work template (<code>/mining/work</code>), hashes it locally on CPU, GPU, or through a pool, and submits the solved block (<code>/mining/submit</code>). Each valid block pays its miner a single <code>SYSTEM</code> reward transaction — this is the <em>only</em> way new HLX is created, and never beyond the fixed maximum supply.</p>
       <p><strong>Which chain is real (consensus).</strong> Nodes always follow the chain with the most <strong>accumulated proof-of-work</strong> (<code>chain_work</code>), not merely the longest. If two miners find a block at the same height at once, the network briefly splits and each node keeps the block it saw first. Nothing settles until the next block is mined: whichever branch it extends gains more work, and every node reorganizes onto that heavier branch. The abandoned block becomes an <strong>orphan</strong> — its ordinary transactions go back to the mempool to be mined again, and its reward is discarded, so only the winning miner is paid. Configured <strong>checkpoints</strong> stop any reorg from rewriting history past a fixed point.</p>
       <p><strong>Networking.</strong> Nodes talk over plain HTTP. A new node joins by contacting a bootstrap <strong>seed</strong>, then learns about everyone else through peer gossip. Every 30 seconds each node discovers peers, pulls the heaviest chain it can find, and re-audits every block's hash.</p>
@@ -1048,10 +1103,14 @@
         <li><strong>Create one.</strong> Open the <strong>NFTs</strong> tab and fill in a name, description, and an <strong>HTTPS image URL</strong>. Optionally add <strong>traits</strong> (trait/value pairs such as Color / Blue) and a <strong>creator royalty</strong> percentage. Submitting mints the NFT to you; it confirms once a block is mined.</li>
         <li><strong>What's stored on-chain.</strong> The name, description, image link, and traits are recorded, and a SHA-256 <strong>content hash</strong> of that metadata is signed into the mint — so anyone can verify the details were never altered after minting. The image file itself lives at the URL you provide, not in the block.</li>
         <li><strong>My NFTs.</strong> The tab shows a gallery of every NFT you currently own, each with its image, traits, id, royalty, and a <strong>Transfer</strong> button.</li>
+        <li><strong>Discover and value.</strong> Discover shows every confirmed NFT, including other wallets' NFTs. Market value uses the last confirmed sale when one exists, otherwise the highest escrow-backed bid. A listing without a sale is clearly labeled as an asking price.</li>
+        <li><strong>Sale chart.</strong> Choose <strong>Details &amp; price chart</strong> on any NFT to view its confirmed sale prices as OHLC candlesticks. The interval, start time, pan, wheel zoom, height, and width controls work the same way as the token chart.</li>
+        <li><strong>Listings and purchases.</strong> An owner can list an NFT for a whole-HLX price, then edit or cancel that listing from <strong>Manage NFTs</strong>. Editing its price preserves its bids. A buyer can purchase it atomically: consensus deducts the buyer's HLX, pays the seller and creator royalty, and transfers ownership in one confirmed transaction.</li>
+        <li><strong>Bids.</strong> A bid locks real HLX in blockchain escrow, so a wallet cannot make an unfunded bid or spend that HLX elsewhere. Bidders can raise or cancel their own bid. Manage NFTs shows the owner every bid from highest to lowest and lets them accept a selected bid; losing bids are refunded when the NFT sells, transfers, or is delisted.</li>
         <li><strong>Transfer.</strong> Only the current owner can move an NFT. A transfer is a straight handoff of ownership to another address for no HLX — the chain simply records the new owner. Forged ids, tampered metadata, and transferring an NFT you don't own are all rejected by every node.</li>
-        <li><strong>Royalties.</strong> The creator royalty is stored on every NFT so a future marketplace can pay the original creator a cut of each sale automatically.</li>
+        <li><strong>Royalties.</strong> The creator can update the royalty only while they still own the NFT and before its first transfer or sale. The first ownership change locks it permanently, even if it later returns to the creator. The royalty is automatically paid from each confirmed marketplace sale; if the creator is also the seller, they receive the full sale amount.</li>
       </ol>
-      <div class="alert alert-info">Today NFTs can be minted and transferred; there is no on-chain <em>price</em> yet. A transfer is an ownership handoff, so any payment is arranged off-chain. A trustless marketplace — list an NFT and trade it atomically for HLX, a token, or another NFT, with royalties enforced — is planned as the next step. NFT support is a consensus feature, so every node must run the updated build.</div>
+      <div class="alert alert-info">NFT marketplace and royalty-management actions are signed consensus transactions under peer protocol 14. Private keys remain in the browser, and every node verifies the signature, ownership, escrow balance, price, royalty settlement, and network fee. Upgrade every node before confirming marketplace transactions.</div>
     </section>
 
     <section class="card docs-section">
@@ -1143,7 +1202,7 @@
         <li>Maximum native supply: 20,000,000 HLX.</li>
         <li>Tokens, liquidity pools, and atomic token-to-token swaps are all active from block&nbsp;1. Token-to-token trades route through both HLX pools.</li>
         <li>The DAD token-burn feature requires every node to run the updated build; nodes on older code reject <code>token_burn</code> transactions, so upgrade all nodes together before relying on it.</li>
-        <li>NFT mint and transfer are consensus transactions: nodes on older code reject them, so upgrade every node together before relying on NFTs.</li>
+        <li>Protocol 12 adds a signed 1 HLX minimum fee to new transfers, token actions, and NFT actions. The confirming miner receives every fee in its block on top of the mining subsidy; fees do not create new supply. Fee-less legacy transactions become invalid at block 200.</li>
         <li>Block timestamps must not run backward past their parent by more than a small tolerance (and still may not be far in the future). This lets fast, low-difficulty blocks that share a clock tick — or miners that stamp whole seconds — be accepted instead of wrongly rejected as "another miner won." It is a consensus rule, so update every node together.</li>
         <li>Auto-checkpoints: the node periodically records a checkpoint at a safely buried height so deep history can't be reorganized, hardening the chain against long-range rewrites without manual configuration.</li>
         <li>From block 1, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> is the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
@@ -1238,6 +1297,15 @@
     <div class="modal-body" id="tx-modal-body"><div class="empty">Loading&hellip;</div></div>
   </div>
 </div>
+<div id="nft-modal" class="modal-backdrop" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="nft-modal-title" style="width:min(820px,100%)">
+    <div class="modal-head">
+      <h2 id="nft-modal-title">NFT details</h2>
+      <button type="button" class="btn btn-ghost modal-close" id="btn-close-nft-modal" aria-label="Close NFT details">&times;</button>
+    </div>
+    <div class="modal-body" id="nft-modal-body"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
 <div id="scan-modal" class="modal-backdrop" aria-hidden="true">
   <div class="modal-card" role="dialog" aria-modal="true" style="width:min(400px,100%)">
     <div class="modal-head">
@@ -1256,7 +1324,7 @@
 <!-- Self-hosted QR generator (no external CDN dependency). -->
 <script src="/qrcode.js?v=1" defer></script>
 <!-- Bump the ?v= version whenever app.js changes so browsers don't serve a stale cached copy. -->
-<script src="/app.js?v=20260732" defer></script>
-<script src="/pwa.js?v=1" defer></script>
+<script src="/app.js?v=20260738" defer></script>
+<script src="/pwa.js?v=3" defer></script>
 </body>
 </html>

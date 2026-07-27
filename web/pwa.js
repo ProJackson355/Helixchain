@@ -8,7 +8,12 @@
  */
 (function () {
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+    window.addEventListener('load', async () => {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });
+        await registration.update();
+      } catch (_) {}
+    });
   }
 
   function installButton() {
@@ -17,7 +22,7 @@
     b = document.createElement('button');
     b.id = 'pwa-install';
     b.type = 'button';
-    b.textContent = '⬇ Install app';
+    b.textContent = 'Install Helix app';
     b.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:60;display:none;padding:9px 15px;border:none;border-radius:11px;font:600 13px/1 "Segoe UI",system-ui,sans-serif;color:#fff;background:linear-gradient(130deg,#7c5cfc,#5b8af7);box-shadow:0 6px 18px -6px rgba(108,99,255,.67);cursor:pointer';
     document.body.appendChild(b);
     return b;
