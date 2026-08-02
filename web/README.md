@@ -13,13 +13,27 @@ Python source, wallet files, or node configuration.
 - `_headers` — browser security and cache headers.
 - `token-metadata.example.json` — metadata-file template using the required
   `name`, `symbol`, `description`, and HTTPS `image` fields.
-- `downloads/helix-miner.zip` and `downloads/helix-node.zip` - downloadable
-  Python software bundles linked from the public Docs tab.
+- `downloads/helix-miner.zip`, `downloads/helix-node.zip`, and
+  `downloads/helix-pool.zip` - downloadable Python software bundles linked from
+  the public Docs tab. The node and pool GUIs accept masked Cloudflare named-
+  tunnel tokens without saving them. The miner bundle includes the redesigned
+  desktop GUI, Windows executable, and headless `helix_miner_cli.py` entry point.
+- `downloads/helix-wallet-windows.zip` and `helix-wallet-linux.zip` - the
+  desktop wallet launchers and checksums. The miner and node ZIPs contain their
+  respective Windows executables. The downloads are split so every asset stays
+  below Cloudflare Pages' 25 MiB per-file limit. Desktop browsers download the
+  matching wallet ZIP; mobile browsers retain normal PWA installation.
 
 The **Activity** tab provides numbered pages of confirmed transactions across
 every wallet, newest first. The personal **History** tab remains scoped to the
 unlocked wallet. Selecting any Activity row opens its complete transaction and
 block details.
+
+The **Leaderboard** tab ranks funded public addresses by confirmed HLX plus
+custom-token holdings valued at each token's current confirmed HLX-pool spot
+price. Select an address to view a candlestick history with interval, start,
+pan, wheel-zoom, and width/height controls. NFTs and unpooled tokens are
+excluded; all displayed totals are estimates rather than guaranteed sale value.
 
 The **NFTs** tab separates the active wallet's collection, NFT management,
 global discovery, and NFT creation. Discovery includes NFTs created by other wallets and exposes
@@ -31,14 +45,14 @@ discarding its active bids, view all bids from highest to lowest, and accept a
 selected bid. The creator can edit the royalty only before the NFT's first
 transfer or sale; that first ownership change locks it permanently.
 Every NFT action is signed locally by the acting wallet's private key. The key
-is never sent to the node. The current release uses peer protocol 14,
+is never sent to the node. The current release uses peer protocol 15,
 so every node must be upgraded and restarted before using them.
 
 Every newly submitted transfer, token action, and NFT action includes the
 network's signed transaction fee (currently 1 HLX). The confirming miner
 receives the block's fees in addition to the mining subsidy. Fees move existing
 HLX and do not count as newly issued supply. Fee-less legacy transactions stop
-being valid at block 200, so deploy protocol 14 to every node before activation.
+being valid at block 200, so deploy protocol 15 to every node before activation.
 
 The secp256k1 implementation used to sign transactions is pinned and bundled
 locally as `secp256k1.js`; the production wallet does not download executable
@@ -122,18 +136,20 @@ In the Cloudflare dashboard, open your Pages project and go to
   The gateway accepts the array as dashboard text or a JSON binding, removes
   duplicates, and supports up to 10 nodes. Read requests and signed
   `/transaction` submissions fail over on connection errors or 5xx responses.
-  Mining and other administrative writes use only one selected node to prevent
-  an uncertain response from executing an action twice. Before choosing that
+  Administrative writes use only one selected node to prevent an uncertain
+  response from executing an action twice. Before choosing that
   node, the gateway probes configured nodes in order and skips dead entries.
   Remove expired TryCloudflare URLs anyway; they are temporary. Every configured
   node must run the same Helix network and protocol and should stay synchronized.
-- `HELIX_ADMIN_API_KEY` — required for mining and other administrative web
-  actions. Choose **Encrypt** and use the exact same long random value supplied
+- `HELIX_ADMIN_API_KEY` — required for administrative web actions. Choose
+  **Encrypt** and use the exact same long random value supplied
   to the local node's `HELIX_ADMIN_API_KEY` environment variable. Never place
   this secret in any file in the `web` folder.
 - `HELIX_ENABLE_ADMIN_API` — optional variable. Set it to the exact string
-  `true` to enable mining, peer registration, discovery, audit, and manual sync
-  through the public site. These routes are disabled by default.
+  `true` to enable peer registration, discovery, audit, and manual sync through
+  the public site. These routes are disabled by default. Mining never runs on
+  the node; miners fetch `/mining/work`, hash locally, and submit proofs through
+  `/mining/submit`.
 
 Redeploy after adding or changing variables.
 

@@ -25,38 +25,36 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg:       #0d0f14;
-      --surface:  #151920;
-      --surface2: #1c2130;
-      --border:   #252d3d;
+      --bg:       #0a0b0f;
+      --surface:  #14161c;
+      --surface2: #1b1e26;
+      --border:   #23262f;
       --accent:   #7c5cfc;
       --accent2:  #5b8af7;
       --green:    #3dd68c;
       --red:      #f06474;
       --orange:   #ffb86c;
-      --text:     #e2e8f0;
-      --muted:    #8899aa;
-      --radius:   14px;
+      --text:     #e8eaf0;
+      --muted:    #888e9c;
+      --radius:   12px;
       --grad:     linear-gradient(130deg, var(--accent), var(--accent2));
-      --ring:     0 0 0 3px #7c5cfc38;
-      --shadow:   0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(18,14,54,.85);
-      --shadow-lg:0 16px 44px -18px rgba(84,60,220,.5);
+      --ring:     0 0 0 3px #7c5cfc33;
+      --shadow:   0 1px 2px rgba(0,0,0,.25);
+      --shadow-lg:0 12px 32px -20px rgba(0,0,0,.7);
     }
     body {
       background: var(--bg); color: var(--text);
-      background-image:
-        radial-gradient(72% 55% at 0% -10%, #7c5cfc22, transparent 60%),
-        radial-gradient(62% 50% at 100% -6%, #5b8af71c, transparent 60%);
+      background-image: radial-gradient(80% 45% at 50% -12%, #7c5cfc12, transparent 62%);
       background-attachment: fixed;
-      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
       font-size: 15px; line-height: 1.6; min-height: 100vh;
+      -webkit-font-smoothing: antialiased; overflow-x: clip;
     }
     #app { display: flex; flex-direction: column; min-height: 100vh; }
     header {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 16px 32px; background: linear-gradient(180deg, #171b24, #12151c);
-      border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
-      box-shadow: 0 1px 0 #ffffff08, 0 10px 26px -20px #000;
+      padding: 15px 28px; background: #0f1117;
+      border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 40;
     }
     /* Installed PWA only: the status bar is translucent, so content sits under the
        notch / Dynamic Island. Push the whole top bar DOWN so it physically begins
@@ -80,11 +78,44 @@
     .logo-hex {
       width: 32px; height: 32px; background: var(--grad); border-radius: 9px;
       display: grid; place-items: center; font-size: 17px; object-fit: cover;
-      box-shadow: 0 4px 14px -4px #7c5cfc99;
+      box-shadow: 0 2px 10px -4px #7c5cfc55;
     }
     .token-native-logo { display:inline-grid; flex-shrink:0; color:#fff; }
     nav { display: flex; gap: 6px; }
     .mobile-nav-head, .mobile-nav-lock, .menu-toggle, .mobile-nav-backdrop { display:none; }
+    /* Collapsed navigation at ALL widths: the tabs live in a slide-in sidebar
+       opened by the hamburger on the top right (previously mobile-only), so the
+       top bar stays uncluttered and never overlaps the logo. */
+    body.mobile-nav-open { overflow:hidden; }
+    .wallet-unlocked #user-bar { margin-left:auto; }
+    .wallet-unlocked .menu-toggle {
+      display:inline-flex; width:42px; height:42px; padding:0; margin-left:14px;
+      flex-direction:column; align-items:center; justify-content:center; gap:5px;
+      background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+      color:var(--text); cursor:pointer; flex-shrink:0;
+    }
+    .wallet-unlocked .menu-toggle:hover { border-color:var(--accent); color:var(--accent); }
+    .menu-toggle span { width:20px; height:2px; background:currentColor; border-radius:2px; transition:transform .2s,opacity .2s; }
+    .mobile-nav-open .menu-toggle span:nth-child(1) { transform:translateY(7px) rotate(45deg); }
+    .mobile-nav-open .menu-toggle span:nth-child(2) { opacity:0; }
+    .mobile-nav-open .menu-toggle span:nth-child(3) { transform:translateY(-7px) rotate(-45deg); }
+    #main-nav {
+      display:flex !important; position:fixed; inset:0 0 0 auto; width:min(88vw,340px);
+      padding:20px 18px max(22px,env(safe-area-inset-bottom)); flex-direction:column;
+      align-items:stretch; gap:8px; overflow-y:auto; background:var(--surface);
+      border-left:1px solid var(--border); box-shadow:-18px 0 50px #000a;
+      transform:translateX(105%); visibility:hidden; transition:transform .22s ease,visibility .22s;
+      z-index:50;
+    }
+    .mobile-nav-open #main-nav { transform:translateX(0); visibility:visible; }
+    .mobile-nav-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:2px 4px 14px; border-bottom:1px solid var(--border); margin-bottom:5px; }
+    .mobile-nav-head strong { font-size:17px; }
+    .mobile-nav-close { width:38px; height:38px; padding:0; font-size:24px; line-height:1; }
+    #main-nav .nav-btn { width:100%; min-height:45px; padding:10px 14px; text-align:left; font-size:15px; }
+    #main-nav .nav-btn.active { box-shadow:inset 3px 0 0 #fff; }
+    .mobile-nav-lock { display:inline-flex; margin-top:auto; min-height:45px; }
+    .mobile-nav-backdrop { position:fixed; inset:0; z-index:35; background:#05070b66; opacity:0; visibility:hidden; transition:opacity .22s,visibility .22s; }
+    .mobile-nav-open .mobile-nav-backdrop { display:block; opacity:1; visibility:visible; }
     .nav-btn {
       background: none; border: 1px solid var(--border); color: var(--muted);
       padding: 7px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
@@ -93,7 +124,6 @@
     .nav-btn:hover { border-color: var(--accent); color: var(--text); }
     .nav-btn.active {
       background: var(--grad); border-color: transparent; color: #fff;
-      box-shadow: 0 5px 16px -7px #6c63ffb0;
     }
     #user-bar { display: flex; align-items: center; gap: 12px; font-size: 14px; }
     #hdr-wallet-name { color: var(--text); font-weight: 600; }
@@ -105,19 +135,45 @@
     .panel { display: none; }
     .panel.active { display: block; }
     .card {
-      background: linear-gradient(180deg, #171b24, var(--surface));
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 28px; margin-bottom: 20px;
+      border-radius: var(--radius); padding: 26px; margin-bottom: 18px;
       box-shadow: var(--shadow); position: relative;
     }
-    .card::before {
-      content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
-      background: var(--grad); opacity: .55; pointer-events: none;
-      border-radius: var(--radius) var(--radius) 0 0;
-    }
+    .card::before { content: none; }
+    /* Center the narrower Send cards within the content area. */
+    #panel-send .card { margin-left: auto; margin-right: auto; }
     .card-title {
-      font-size: 12px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .1em; color: var(--muted); margin-bottom: 20px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .12em; color: var(--muted); margin-bottom: 18px;
+    }
+    /* Dashboard: a responsive grid instead of one long stack of full-width cards.
+       The balance hero and token list span the full width; the two utility cards
+       sit side by side. */
+    #panel-dashboard.active {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px; align-items: start;
+    }
+    #panel-dashboard .card { margin-bottom: 0; }
+    #panel-dashboard .dash-span { grid-column: 1 / -1; }
+    .dash-hero {
+      background: radial-gradient(120% 130% at 100% 0%, #7c5cfc14, transparent 60%), var(--surface);
+    }
+    .dash-balance-row { display: flex; align-items: baseline; gap: 4px; margin: 18px 0 8px; flex-wrap: wrap; }
+    .dash-hero .balance-big { font-size: 54px; }
+    .dash-hero-sub { font-size: 12px; color: var(--muted); max-width: 520px; line-height: 1.55; }
+    .dash-hero-stats { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+    .dash-stat {
+      display: flex; flex-direction: column; gap: 2px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 16px; min-width: 130px;
+    }
+    .dash-stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
+    .dash-stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .dash-addr-mono { font-family: monospace; font-size: 13px; overflow-wrap: anywhere; color: var(--text); }
+    @media (max-width: 700px) {
+      #panel-dashboard.active { grid-template-columns: 1fr; gap: 16px; }
+      .dash-hero .balance-big { font-size: 42px; }
     }
     .field { margin-bottom: 16px; }
     label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
@@ -148,7 +204,7 @@
     }
     .btn:active { transform: scale(.97); }
     .btn:disabled { opacity: .4; cursor: not-allowed; }
-    .btn-primary { background: var(--grad); color: #fff; box-shadow: 0 6px 18px -8px #6c63ffaa; }
+    .btn-primary { background: var(--grad); color: #fff; }
     .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
     .btn-success { background: var(--green); color: #0a1f11; }
     .btn-success:hover:not(:disabled) { opacity: .85; }
@@ -309,7 +365,8 @@
     .local-badge {
       display: inline-flex; align-items: center; gap: 5px;
       background: #0e1a0e; border: 1px solid var(--green);
-      border-radius: 20px; padding: 3px 10px; font-size: 11px; color: var(--green);
+      border-radius: 20px; padding: 4px 11px; font-size: 11px; color: var(--green);
+      white-space: nowrap; flex-shrink: 0; line-height: 1;
     }
     .token-layout { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
     .token-tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; }
@@ -358,7 +415,13 @@
     .chart-range-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
     .chart-start-control { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
     .chart-start-control input[type=datetime-local] { min-height:32px; padding:3px 6px; font-size:11px; color:var(--text); background:var(--card); border:1px solid var(--border); border-radius:7px; accent-color:var(--accent); }
-    @media (max-width:640px) { .price-chart-ranges { width:100%; margin-right:0; flex-wrap:wrap; } .chart-start-control { width:100%; } .chart-start-control input[type=range] { flex:1; width:auto; } }
+    @media (max-width:640px) {
+      .price-chart-ranges { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); width:100%; margin-right:0; }
+      .price-chart-ranges .chart-range-btn { width:100%; padding-left:6px; padding-right:6px; }
+      .chart-start-control { width:100%; }
+      .chart-start-control input[type=datetime-local] { flex:1; width:auto; min-width:0; }
+      .chart-help { align-items:flex-start; flex-direction:column; }
+    }
     .chart-resize-handle {
       display:flex; align-items:center; justify-content:center; height:18px; margin-top:5px;
       color:var(--muted); cursor:nwse-resize; touch-action:none; font-size:17px; letter-spacing:3px;
@@ -409,11 +472,11 @@
     .page-btn:hover:not(:disabled), .page-btn.active { border-color:var(--accent); color:var(--text); background:#1d2340; }
     .page-btn.active { color:var(--accent2); font-weight:800; }
     .page-btn:disabled { cursor:default; opacity:.55; }
-    .docs-hero { display:flex; align-items:center; justify-content:space-between; gap:24px; }
+    .docs-hero { display:flex; flex-direction:column; align-items:flex-start; gap:18px; }
     .docs-hero h2 { font-size:26px; margin-bottom:8px; }
     .docs-hero p, .docs-section p { color:var(--muted); font-size:13px; line-height:1.65; }
-    .docs-downloads { display:flex; gap:10px; flex-wrap:wrap; flex-shrink:0; }
-    .docs-downloads .btn { text-decoration:none; text-align:center; }
+    .docs-downloads { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; width:100%; }
+    .docs-downloads .btn { display:flex; align-items:center; justify-content:center; min-height:46px; text-decoration:none; text-align:center; }
     .docs-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
     .docs-section ol, .docs-section ul { padding-left:20px; color:var(--muted); font-size:13px; line-height:1.65; }
     .docs-section li + li { margin-top:8px; }
@@ -421,38 +484,12 @@
     .docs-section code { color:var(--accent2); background:#0b0e16; border:1px solid var(--border); border-radius:5px; padding:1px 5px; overflow-wrap:anywhere; }
     @media(max-width:700px) {
       .token-layout { grid-template-columns:1fr; }
-      body.mobile-nav-open { overflow:hidden; }
       header { padding:11px 14px; min-height:58px; flex-wrap:nowrap; gap:10px; z-index:40; }
       .logo { font-size:18px; }
       .logo-hex { width:30px; height:30px; }
-      .wallet-unlocked .menu-toggle {
-        display:inline-flex; width:42px; height:42px; padding:0; margin-left:auto;
-        flex-direction:column; align-items:center; justify-content:center; gap:5px;
-        background:var(--surface2); border:1px solid var(--border); border-radius:10px;
-        color:var(--text); cursor:pointer;
-      }
-      .menu-toggle span { width:20px; height:2px; background:currentColor; border-radius:2px; transition:transform .2s,opacity .2s; }
-      .mobile-nav-open .menu-toggle span:nth-child(1) { transform:translateY(7px) rotate(45deg); }
-      .mobile-nav-open .menu-toggle span:nth-child(2) { opacity:0; }
-      .mobile-nav-open .menu-toggle span:nth-child(3) { transform:translateY(-7px) rotate(-45deg); }
-      #main-nav {
-        display:flex !important; position:fixed; inset:0 0 0 auto; width:min(84vw,330px);
-        padding:18px 16px max(22px,env(safe-area-inset-bottom)); flex-direction:column;
-        align-items:stretch; gap:8px; overflow-y:auto; background:var(--surface);
-        border-left:1px solid var(--border); box-shadow:-18px 0 50px #000a;
-        transform:translateX(105%); visibility:hidden; transition:transform .22s ease,visibility .22s;
-        z-index:50;
-      }
-      .mobile-nav-open #main-nav { transform:translateX(0); visibility:visible; }
-      .mobile-nav-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:2px 4px 14px; border-bottom:1px solid var(--border); margin-bottom:5px; }
-      .mobile-nav-head strong { font-size:17px; }
-      .mobile-nav-close { width:38px; height:38px; padding:0; font-size:24px; line-height:1; }
-      #main-nav .nav-btn { width:100%; min-height:45px; padding:10px 14px; text-align:left; font-size:15px; }
-      #main-nav .nav-btn.active { box-shadow:inset 3px 0 0 #fff; }
-      .mobile-nav-lock { display:inline-flex; margin-top:auto; min-height:45px; }
-      .mobile-nav-backdrop { position:fixed; inset:0; z-index:35; background:#05070b8c; opacity:0; visibility:hidden; transition:opacity .22s,visibility .22s; }
-      .mobile-nav-open .mobile-nav-backdrop { display:block; opacity:1; visibility:visible; }
-      #user-bar { margin-left:auto; min-width:0; }
+      .wallet-unlocked .menu-toggle { margin-left:0; }
+      #main-nav { width:min(84vw,330px); }
+      #user-bar { min-width:0; }
       #user-bar > .local-badge, #user-bar > div:not(#hdr-sync-pill), #btn-logout { display:none; }
       #hdr-sync-pill.visible { max-width:130px; overflow:hidden; }
       main { padding:18px 12px; }
@@ -460,8 +497,9 @@
       /* Let long button labels wrap within the button instead of overflowing. */
       .btn { white-space:normal; padding-left:16px; padding-right:16px; line-height:1.2; }
       .btn-sm { padding:7px 12px; }
-      .addr-row { flex-wrap:wrap; }
-      .addr-row .btn, .addr-row .copy-btn { flex:1 1 auto; }
+      .addr-row { display:grid; grid-template-columns:minmax(0,1fr); gap:9px; }
+      .addr-row > span { min-width:0; overflow-wrap:anywhere; word-break:break-word; font-size:11px; }
+      .addr-row .btn, .addr-row .copy-btn { width:100%; min-height:38px; }
       .token-list { grid-template-columns:1fr; }
       .token-card { grid-template-columns:auto minmax(0,1fr); }
       .token-card .token-balance { grid-column:2; margin-top:0; font-size:17px; }
@@ -473,9 +511,7 @@
       .chart-size-control { width:100%; }
       .chart-size-control input[type=range] { flex:1; width:auto; }
       .metadata-preview { flex-direction:column; }
-      .docs-hero { align-items:flex-start; flex-direction:column; }
-      .docs-downloads { width:100%; }
-      .docs-downloads .btn { flex:1; }
+      .docs-downloads { grid-template-columns:1fr; }
       .docs-grid { grid-template-columns:1fr; }
       #panel-nodes > .nodes-grid { grid-template-columns:minmax(0,1fr) !important; gap:0 !important; }
       #panel-nodes .peer-add-row { flex-direction:column; }
@@ -487,6 +523,23 @@
       #panel-nodes .audit-grid > div { min-width:0; padding:7px 6px; overflow-wrap:anywhere; }
       #panel-nodes .audit-summary { align-items:flex-start; }
       #panel-nodes .card { overflow:hidden; }
+      #panel-leaderboard .leaderboard-head,
+      #panel-leaderboard .leaderboard-detail-head { align-items:stretch !important; flex-direction:column; }
+      #panel-leaderboard .leaderboard-head .btn,
+      #panel-leaderboard .leaderboard-detail-head .btn { width:100%; }
+      #panel-leaderboard .leaderboard-detail-head .token-address { overflow-wrap:anywhere; }
+      #panel-leaderboard .tx-row {
+        display:grid; grid-template-columns:42px minmax(0,1fr); align-items:start;
+        column-gap:11px; row-gap:5px; padding:13px;
+      }
+      #panel-leaderboard .tx-icon { grid-row:1 / 3; }
+      #panel-leaderboard .tx-sub { overflow-wrap:anywhere; white-space:normal; }
+      #panel-leaderboard .tx-right {
+        grid-column:2; display:flex; align-items:baseline; justify-content:space-between;
+        gap:9px; text-align:left;
+      }
+      #panel-leaderboard .tx-meta { margin-top:0; }
+      #leaderboard-worth-chart { min-width:0; }
     }
     .modal-backdrop {
       display: none; position: fixed; inset: 0; z-index: 1000;
@@ -562,6 +615,7 @@
     <button class="nav-btn" data-panel="nft">NFTs</button>
     <button class="nav-btn" data-panel="history">History</button>
     <button class="nav-btn" data-panel="activity">Activity</button>
+    <button class="nav-btn" data-panel="leaderboard">Leaderboard</button>
     <button class="nav-btn" data-panel="nodes">Nodes</button>
     <button class="nav-btn" data-panel="explorer">Explorer</button>
     <button class="nav-btn" data-panel="pools">Pools</button>
@@ -570,7 +624,7 @@
   </nav>
   <div id="user-bar" style="display:none">
     <div id="hdr-sync-pill"><div class="dot syncing"></div><span id="hdr-sync-text">Syncing…</span></div>
-    <span class="local-badge">🔒 Local wallet</span>
+    <span class="local-badge">Stored locally</span>
     <div>
       <div id="hdr-wallet-name"></div>
       <div id="hdr-wallet-addr"></div>
@@ -704,34 +758,37 @@
 
 <!-- DASHBOARD -->
 <div id="panel-dashboard" class="panel">
-  <div class="card">
+  <div class="card dash-hero dash-span">
     <div class="sync-row">
       <div class="card-title" style="margin-bottom:0">Total Value</div>
       <div class="node-pill"><div class="dot" id="sync-dot"></div><span id="sync-label">Synced</span></div>
     </div>
-    <div style="margin:14px 0 4px">
+    <div class="dash-balance-row">
       <span class="balance-big" id="dash-balance">—</span>
       <span class="balance-unit">HLX</span>
     </div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
+    <div class="dash-hero-sub">
       Total value of your wallet, priced in HLX (HLX is the stable unit of account). Your actual HLX holdings appear in the list below.
     </div>
-    <div style="font-size:13px;color:var(--muted);margin-bottom:18px">
-      <span id="dash-pending-count">—</span> transactions pending on the network
+    <div class="dash-hero-stats">
+      <div class="dash-stat">
+        <span class="dash-stat-value" id="dash-pending-count">—</span>
+        <span class="dash-stat-label">Pending on network</span>
+      </div>
     </div>
-    <div class="field">
+    <div class="field" style="margin-top:20px;margin-bottom:0">
       <label>Your Address</label>
       <div class="addr-row">
-        <span id="dash-addr" style="flex:1"></span>
+        <span id="dash-addr" class="dash-addr-mono" style="flex:1"></span>
         <button class="copy-btn" data-copy-id="dash-addr">Copy</button>
       </div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:10px">
+    <div style="display:flex;gap:8px;margin-top:16px">
       <button class="btn btn-ghost btn-sm" id="btn-dash-refresh">↻ Refresh</button>
       <button class="btn btn-ghost btn-sm" id="btn-sync-now">⇄ Sync with peers</button>
     </div>
   </div>
-  <div class="card">
+  <div class="card dash-span">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <div class="card-title" style="margin-bottom:0">Your Tokens</div>
       <button class="btn btn-ghost btn-sm" id="btn-dash-tokens">Open Tokens</button>
@@ -942,6 +999,31 @@
   </div>
 </div>
 
+<!-- LEADERBOARD -->
+<div id="panel-leaderboard" class="panel">
+  <div class="card">
+    <div class="leaderboard-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <div class="card-title" style="margin-bottom:0">Wallet Worth Leaderboard</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-leaderboard" type="button">Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Public confirmed addresses ranked by HLX balance plus token holdings at their current on-chain HLX pool spot price. NFTs and tokens without active liquidity are excluded. Values are estimates and pool prices can be manipulated.</p>
+    <div id="leaderboard-list"><div class="empty">Loading&hellip;</div></div>
+    <nav id="leaderboard-pagination" class="pagination" aria-label="Wallet leaderboard pages"></nav>
+  </div>
+  <div class="card" id="leaderboard-detail" hidden>
+    <div class="leaderboard-detail-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <div>
+        <div class="card-title" style="margin-bottom:4px">Wallet Worth History</div>
+        <div class="token-address" id="leaderboard-detail-address"></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="btn-close-leaderboard-detail" type="button">Close</button>
+    </div>
+    <div id="leaderboard-detail-summary" class="detail-grid" style="margin-bottom:14px"></div>
+    <div id="leaderboard-worth-chart" class="price-chart"><div class="empty">Select a wallet to view its chart.</div></div>
+    <div class="alert alert-info mt8">Candles show estimated confirmed wallet worth, not a guaranteed sale value. Large token positions may receive substantially less HLX when sold because of price impact.</div>
+  </div>
+</div>
+
 <!-- POOLS -->
 <div id="panel-pools" class="panel">
   <div class="card">
@@ -1044,11 +1126,14 @@
     <div>
       <div class="card-title">Helix Documentation</div>
       <h2>Use the wallet, mine blocks, or join the network.</h2>
-      <p>Helix is an educational proof-of-work network. Start with the wallet guide, or download the software needed to run your own miner or full node.</p>
+      <p>Helix is an educational proof-of-work network. Start with the wallet guide, or download the software needed to mine, host a pool, or run a full node.</p>
     </div>
     <div class="docs-downloads">
+      <a class="btn btn-primary" href="/downloads/helix-wallet-windows.zip" download>Windows Wallet App</a>
+      <a class="btn btn-primary" href="/downloads/helix-wallet-linux.zip" download>Linux Wallet App</a>
       <a class="btn btn-primary" href="/downloads/helix-miner.zip" download>Download Helix Miner</a>
       <a class="btn btn-success" href="/downloads/helix-node.zip" download>Download Helix Node</a>
+      <a class="btn btn-ghost" href="/downloads/helix-pool.zip" download>Download Helix Pool</a>
     </div>
   </div>
 
@@ -1076,7 +1161,7 @@
         <li><strong>Scan to send.</strong> On the <strong>Send</strong> screen, tap <strong>📷 Scan a QR code</strong> to read a plain address or a payment-request code with your camera and auto-fill the recipient (and amount). Camera access needs HTTPS or localhost.</li>
         <li><strong>Address book.</strong> Save the people you pay as named contacts and pick them from a dropdown on Send instead of pasting a 40-character address each time.</li>
         <li><strong>Desktop notifications.</strong> Opt in and the wallet notifies you when one of your pending transactions confirms, so you don't have to watch the History list.</li>
-        <li><strong>Install it as an app.</strong> Helix is a progressive web app — install it from your browser (desktop or mobile) for a full-screen, offline-capable wallet that launches from your home screen or dock.</li>
+        <li><strong>Install it as an app.</strong> On Windows or Linux, use the matching wallet-app download. The miner and node ZIPs include their Windows executables. On Android or iOS, install the PWA from the browser for a full-screen wallet that launches from the home screen.</li>
         <li><strong>Explorer.</strong> The Explorer tab lets you browse blocks and look up any transaction or address on the chain, and the Nodes tab charts network difficulty over time.</li>
         <li><strong>Backup &amp; Restore:</strong> from the Dashboard you can download an encrypted backup file of your wallet, and restore it later from the <strong>Recover</strong> screen. Your seed phrase or a backup file is the only way to regain access on another device or browser.</li>
       </ol>
@@ -1158,6 +1243,7 @@
       <ol>
         <li>Extract <code>helix-miner.zip</code>, install Python 3.11+, then run <code>python -m pip install -r requirements.txt</code>.</li>
         <li>Start it with <code>python helix_miner.py</code>.</li>
+        <li>For a terminal or headless server, run <code>python helix_miner_cli.py --address YOUR_ADDRESS --threads 4</code>. Add <code>--pool URL</code> for pool mode or use <code>--help</code> to see every option. The CLI does not require tkinter.</li>
         <li>Enter the 40-character reward wallet address and one or more reachable node URLs. The miner needs no admin API key. It checks for competing blocks about once per second and logs each round's elapsed time.</li>
         <li>For NVIDIA CUDA 13, install <code>python -m pip install -r requirements-nvidia.txt</code>, then select <strong>NVIDIA CUDA</strong>. CUDA 12 users should install <code>cupy-cuda12x[ctk]</code> instead.</li>
         <li>Choose the CPU worker count or NVIDIA device and start mining. The first valid submitted proof wins the block and the protocol pays the current reward.</li>
@@ -1178,16 +1264,16 @@
       <p>A pool lets several miners combine hashrate and share block rewards, so payouts arrive more steadily than solo mining. Anyone can host one, and the wallet's <strong>Pools</strong> tab is a shared directory — list your pool there and it propagates to every node, showing each pool's fee, active miners, and online status. The pool operator keeps the fee (<code>HELIX_POOL_FEE_PERCENT</code>) from each block; note payouts are whole HLX, so a 1% fee on a 10 HLX reward rounds to 0 — raise the percentage for a reliable cut.</p>
       <div class="card-title" style="margin:14px 0 8px">Host a pool</div>
       <ol>
-        <li>Set the pool's payout wallet as an environment variable — its 12-word seed: Windows <code>set HELIX_POOL_SEED=word word ... word</code>, Linux/macOS <code>export HELIX_POOL_SEED="word word ... word"</code>. This wallet receives block rewards and sends the split to miners, so keep it funded for fees and back it up.</li>
-        <li>Point the pool at a reachable node with <code>HELIX_POOL_NODE</code> (default <code>http://127.0.0.1:8000</code>). Optionally set <code>HELIX_POOL_FEE_PERCENT</code> (default 1), <code>HELIX_POOL_SHARE_SUBTRACT</code> (share difficulty = network difficulty minus this, default 2), and <code>HELIX_POOL_PORT</code> (default 8100).</li>
-        <li>Start it: <code>python run_pool.py</code>. Confirm <code>http://127.0.0.1:8100/pool/info</code> returns the pool address and difficulty.</li>
-        <li>Expose the pool the same way as a node — a <code>cloudflared</code> tunnel or public host — and share that URL with miners. <code>/pool/stats</code> shows live shares, each miner's estimated hashrate, and recent payouts.</li>
+        <li>Download <strong>Helix Pool</strong>. On Windows, double-click <code>setup-pool.bat</code>; on Linux/macOS, run <code>bash start-pool.sh</code>. The Python GUI installs dependencies and keeps its status and logs scrollable.</li>
+        <li>Enter a dedicated payout wallet's 12-word seed, node URL(s), pool port, fee, and share difficulty. Select <strong>Helix website wallet</strong> for a wallet made on this site or <strong>Python/CLI BIP-39 wallet</strong> for one made with the Python tools; the two formats derive different addresses. The seed stays in memory and is never saved.</li>
+        <li>For a named Cloudflare tunnel, paste its token into the masked input and configure its public hostname service as <code>http://localhost:8100</code>. Or leave the token blank and select the temporary tunnel option for a changing <code>trycloudflare.com</code> URL. Tunnel tokens are not stored or logged.</li>
+        <li>Start the pool and give miners its public base URL. The GUI shows live shares, estimated hashrate, connected miners, blocks found, and payouts. Manual environment-variable setup remains documented in the included README.</li>
       </ol>
       <div class="card-title" style="margin:14px 0 8px">Join a pool</div>
       <ol>
         <li>Open Helix Miner and set <strong>Mining mode</strong> to <strong>Pool</strong>.</li>
         <li>Enter the <strong>Pool URL</strong> and your 40-character reward address, choose CPU or NVIDIA, and Start.</li>
-        <li>You mine at the pool's reduced share difficulty and submit shares continuously. When any member solves a block, the reward is split <strong>proportionally to the shares each miner contributed</strong> (minus the pool fee) and paid automatically to your address — more hashrate means more shares means a larger payout. Payouts are on-chain transactions and confirm once a block is mined.</li>
+        <li>You submit shares at a difficulty that automatically adjusts toward a steady rate. When any member solves a block, the reward is split by each miner's <strong>weighted work in the rolling PPLNS window</strong> (minus the pool fee) and paid automatically. Recent sustained hashrate earns more of the payout and discourages pool hopping. Payouts are signed on-chain transactions and confirm once a block is mined.</li>
       </ol>
       <div class="alert alert-info">The pool's admin/payout wallet is only on the host's machine. Miners never share keys — they only submit shares and receive payouts to their own address.</div>
     </section>
@@ -1324,7 +1410,7 @@
 <!-- Self-hosted QR generator (no external CDN dependency). -->
 <script src="/qrcode.js?v=1" defer></script>
 <!-- Bump the ?v= version whenever app.js changes so browsers don't serve a stale cached copy. -->
-<script src="/app.js?v=20260738" defer></script>
-<script src="/pwa.js?v=3" defer></script>
+<script src="/app.js?v=20260741" defer></script>
+<script src="/pwa.js?v=4" defer></script>
 </body>
 </html>

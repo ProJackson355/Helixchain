@@ -3,8 +3,8 @@
  * Kept in an external same-origin file (not inline) so it complies with the
  * site's Content-Security-Policy (script-src 'self'), which blocks inline
  * scripts. Registers the service worker and offers a cross-platform install
- * affordance: the native prompt on Android/desktop, and Add-to-Home-Screen
- * guidance on iOS (which has no programmatic prompt).
+ * affordance: native installation on mobile and the tested desktop download
+ * bundle on Windows/Linux. Desktop browsers no longer install a second PWA.
  */
 (function () {
   if ('serviceWorker' in navigator) {
@@ -29,10 +29,30 @@
   }
 
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isMobile = isIOS || /android|mobile/i.test(navigator.userAgent);
+  const isWindows = /windows/i.test(navigator.userAgent);
+  const isLinux = /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent);
+
+  function showDesktopDownload() {
+    const b = installButton();
+    const download = isWindows
+      ? '/downloads/helix-wallet-windows.zip'
+      : '/downloads/helix-wallet-linux.zip';
+    b.textContent = isWindows ? 'Download Helix Wallet for Windows' : 'Download Helix Wallet for Linux';
+    b.style.display = 'block';
+    b.onclick = () => { window.location.href = download; };
+  }
+
+  if (!standalone && !isMobile && (isWindows || isLinux)) showDesktopDownload();
 
   let deferredPrompt = null;
   window.addEventListener('beforeinstallprompt', event => {
     event.preventDefault();
+    if (!isMobile && (isWindows || isLinux)) {
+      showDesktopDownload();
+      return;
+    }
     deferredPrompt = event;
     const b = installButton();
     b.style.display = 'block';
@@ -49,7 +69,6 @@
     if (b) b.style.display = 'none';
   });
 
-  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   if (isIOS && !standalone) {
     const b = installButton();
     b.style.display = 'block';

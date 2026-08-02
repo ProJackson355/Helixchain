@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from node.blockchain import Blockchain, Block
@@ -11,7 +11,13 @@ from node.submissions import add_submission, get_submissions
 from node.bootstrap import discover_from_bootstrap
 from node.peer_health import compatible, probe_peer
 from node.mempool import MempoolRelay
-from node.security import SecurityManager, SecurityMiddleware, safe_identifier, validate_hex
+from node.security import (
+    SecurityManager,
+    SecurityMiddleware,
+    WebSecurityHeadersMiddleware,
+    safe_identifier,
+    validate_hex,
+)
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -19,10 +25,12 @@ import hashlib
 import json
 import requests
 import os
-import secrets
 import time
 import threading
 import socket
+
+
+NODE_STARTED_AT = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +43,10 @@ CONFIG_FILE = os.getenv("HELIX_CONFIG", os.path.join(PROJECT_ROOT, "config.json"
 
 def _load_config() -> dict:
     defaults = {
-        "node": {"port": 8000, "sync_interval": 30, "version": "1.0.0", "protocol": 10, "network": "mainnet"},
+        "node": {"port": 8000, "sync_interval": 30, "version": "1.1.0", "protocol": 15, "network": "mainnet"},
         "network": {"discovery_ports": [8000, 8001, 8002, 8003, 8004, 8005], "bootstrap_nodes": [], "public_url": ""},
         "mempool": {"transaction_ttl_seconds": 3600, "rebroadcast_interval": 60, "inventory_batch_size": 500, "max_pending_transactions": 5000},
-        "blockchain": {"difficulty": 3, "difficulty_reset_value": 3, "difficulty_reset_height": 161, "reward": 10, "mining_reward": 2, "mining_reward_activation_height": 90, "fractional_mining_reward": "10", "fractional_reward_activation_height": 300, "native_dad_address": "9d7c721b209cee99a8158c524fa433ead9236781", "native_dad_activation_height": 300, "max_supply": 20000000, "min_difficulty": 3, "max_difficulty": 8, "difficulty_adjustment_interval": 10, "target_block_time_seconds": 60, "adaptive_target_block_time_seconds": 600, "adaptive_difficulty_activation_height": 60, "new_target_block_time_seconds": 160, "new_target_block_time_activation_height": 161, "difficulty_activation_height": 10, "fine_difficulty_activation_height": 100000000, "fine_target_block_time_seconds": 120, "token_metadata_activation_height": 41, "token_exchange_activation_height": 41, "token_swap_activation_height": 200, "max_orphans": 100, "orphan_ttl_seconds": 1800, "checkpoints": {}},
+        "blockchain": {"difficulty": 3, "difficulty_reset_value": 3, "difficulty_reset_height": 161, "reward": 10, "mining_reward": 2, "mining_reward_activation_height": 90, "fractional_mining_reward": "10", "fractional_reward_activation_height": 300, "native_dad_address": "9d7c721b209cee99a8158c524fa433ead9236781", "native_dad_activation_height": 300, "max_supply": 20000000, "transaction_fee": 1, "transaction_fee_activation_height": 200, "min_difficulty": 3, "max_difficulty": 8, "difficulty_adjustment_interval": 10, "target_block_time_seconds": 60, "adaptive_target_block_time_seconds": 600, "adaptive_difficulty_activation_height": 60, "new_target_block_time_seconds": 160, "new_target_block_time_activation_height": 161, "difficulty_activation_height": 10, "fine_difficulty_activation_height": 100000000, "fine_target_block_time_seconds": 120, "token_metadata_activation_height": 41, "token_exchange_activation_height": 41, "token_swap_activation_height": 200, "nft_activation_height": 1, "nft_market_activation_height": 1, "max_orphans": 100, "orphan_ttl_seconds": 1800, "checkpoints": {}},
         "security": {"max_request_body_bytes": 1048576, "require_admin_api_key": False, "cors_allowed_origins": ["http://localhost", "http://127.0.0.1"]},
         "performance": {"default_page_size": 50, "max_page_size": 500},
     }
@@ -90,7 +98,7 @@ def _page_bounds(offset: int, limit: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def block_to_dict(block) -> dict:
-    return {
+    data = {
         "index":         block.index,
         "previous_hash": block.previous_hash,
         "timestamp":     block.timestamp,
@@ -98,6 +106,11 @@ def block_to_dict(block) -> dict:
         "hash":          block.hash,
         "transactions":  [tx.to_dict() for tx in block.transactions],
     }
+    if block.transaction_root is not None:
+        data["transaction_root"] = block.transaction_root
+    if block.state_root is not None:
+        data["state_root"] = block.state_root
+    return data
 
 
 def dict_to_block(data: dict) -> Block:
@@ -119,6 +132,10 @@ def dict_to_block(data: dict) -> Block:
     validate_hex(data["hash"], "block hash", (64,))
     if data["index"] > 0:
         validate_hex(data["previous_hash"], "previous hash", (64,))
+    if data.get("transaction_root") is not None:
+        validate_hex(data["transaction_root"], "transaction root", (64,))
+    if data.get("state_root") is not None:
+        validate_hex(data["state_root"], "state root", (64,))
 
     txs = []
     for td in data["transactions"]:
@@ -142,6 +159,13 @@ def dict_to_block(data: dict) -> Block:
             hlx_amount=td.get("hlx_amount"),
             min_receive=td.get("min_receive"),
             target_mint_address=td.get("target_mint_address"),
+            nft_id=td.get("nft_id"),
+            attributes=td.get("attributes"),
+            royalty_bps=td.get("royalty_bps"),
+            fee=td.get("fee"),
+            chain_id=td.get("chain_id"),
+            sequence=td.get("sequence"),
+            valid_until_height=td.get("valid_until_height"),
         )
         tx.signature = td.get("signature")
         tx.tx_id = td.get("tx_id")
@@ -153,6 +177,7 @@ def dict_to_block(data: dict) -> Block:
     return Block(
         data["index"], txs, data["previous_hash"],
         data["timestamp"], data["nonce"], data["hash"],
+        data.get("transaction_root"), data.get("state_root"),
     )
 
 
@@ -164,11 +189,12 @@ def _transaction_from_payload(data: dict) -> Transaction:
     if not isinstance(data, dict):
         raise ValueError("transaction payload must be an object")
     tx_type = data.get("tx_type", "transfer")
-    if tx_type not in {"transfer", *Transaction.TOKEN_TYPES, *Transaction.NFT_TYPES}:
+    if tx_type not in {"transfer", "cancel", *Transaction.TOKEN_TYPES, *Transaction.NFT_TYPES}:
         raise ValueError("transaction type is unsupported")
     common_fields = {
         "sender", "receiver", "amount", "signature", "public_key",
-        "tx_id", "received_at",
+        "tx_id", "received_at", "fee", "chain_id", "sequence",
+        "valid_until_height",
     }
     token_fields = {"tx_type", "mint_address", "nonce"}
     create_fields = {
@@ -180,7 +206,10 @@ def _transaction_from_payload(data: dict) -> Transaction:
     token_swap_fields = {"target_mint_address"}
     nft_fields = {"tx_type", "nft_id", "nonce"}
     nft_mint_fields = {"name", "description", "image", "uri", "metadata_hash", "attributes", "royalty_bps"}
+    nft_royalty_fields = {"royalty_bps"}
     allowed_fields = common_fields
+    if tx_type == "cancel":
+        allowed_fields = allowed_fields | {"tx_type"}
     if tx_type in Transaction.TOKEN_TYPES:
         allowed_fields = allowed_fields | token_fields
     if tx_type == "token_create":
@@ -195,9 +224,17 @@ def _transaction_from_payload(data: dict) -> Transaction:
         allowed_fields = allowed_fields | nft_fields
     if tx_type == "nft_mint":
         allowed_fields = allowed_fields | nft_mint_fields
+    if tx_type == "nft_set_royalty":
+        allowed_fields = allowed_fields | nft_royalty_fields
     unknown = set(data) - allowed_fields
     if unknown:
         raise ValueError(f"unexpected transaction fields: {', '.join(sorted(unknown))}")
+    # ``fee`` is intentionally optional at the transport boundary until the
+    # consensus activation height. This lets already-signed, fee-less mempool
+    # transactions and temporarily cached pre-fee web clients pass through
+    # normal consensus validation instead of being mislabeled as malformed.
+    # Blockchain.transaction_fee_rejection_reason makes it mandatory at/after
+    # the configured activation block.
     required = ("sender", "receiver", "amount", "signature", "public_key")
     if tx_type in Transaction.TOKEN_TYPES:
         required += ("tx_type", "mint_address", "nonce")
@@ -216,6 +253,8 @@ def _transaction_from_payload(data: dict) -> Transaction:
         required += ("tx_type", "nft_id", "nonce")
     if tx_type == "nft_mint":
         required += ("name", "description", "image", "uri", "metadata_hash")
+    if tx_type == "nft_set_royalty":
+        required += ("royalty_bps",)
     missing = [field for field in required if data.get(field) in (None, "")]
     if missing:
         raise ValueError(f"missing transaction fields: {', '.join(missing)}")
@@ -253,6 +292,10 @@ def _transaction_from_payload(data: dict) -> Transaction:
         nft_id=data.get("nft_id"),
         attributes=data.get("attributes"),
         royalty_bps=data.get("royalty_bps"),
+        fee=data.get("fee"),
+        chain_id=data.get("chain_id"),
+        sequence=data.get("sequence"),
+        valid_until_height=data.get("valid_until_height"),
     )
     tx.signature = signature
     tx.public_key = serialization.load_pem_public_key(data["public_key"].encode())
@@ -311,6 +354,8 @@ def _verify_cancellation(tx_id: str, data: dict) -> tuple[str, str, str]:
         )
     except (InvalidSignature, TypeError, ValueError) as exc:
         raise ValueError("cancellation signature is invalid") from exc
+    if Transaction.canonical_signature_hex(signature) != signature:
+        raise ValueError("cancellation signature must use canonical low-S encoding")
     return tx_id, sender, public_pem
 
 
@@ -676,6 +721,7 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-Helix-API-Key"],
 )
+app.add_middleware(WebSecurityHeadersMiddleware)
 
 _consensus = _CONFIG["blockchain"]
 blockchain = Blockchain(_consensus)
@@ -690,36 +736,6 @@ relay = MempoolRelay(TX_TTL_SECONDS, REBROADCAST_INTERVAL)
 for _pending_tx in blockchain.pending_transactions:
     if _pending_tx.tx_id:
         relay.mark_seen(_pending_tx.tx_id, getattr(_pending_tx, "received_at", None))
-
-_mining_jobs: dict[str, dict] = {}
-_mining_jobs_lock = threading.Lock()
-_active_mining_job: str | None = None
-
-
-def _run_mining_job(job_id: str, address: str) -> None:
-    """Mine outside the request lifecycle so proxies cannot time the request out."""
-    global _active_mining_job
-    try:
-        block = blockchain.mine_pending_transactions(address)
-        result = {
-            "status": "completed",
-            "message": "Block mined",
-            "block": block.index,
-            "hash": block.hash,
-            "reward": block.transactions[-1].amount,
-        }
-        broadcast_block(block)
-    except (ValueError, RuntimeError) as exc:
-        result = {"status": "failed", "message": str(exc)}
-    except Exception:
-        # Do not expose unexpected server details through the public status API.
-        result = {"status": "failed", "message": "Mining failed safely"}
-    with _mining_jobs_lock:
-        result["updated_at"] = time.time()
-        _mining_jobs[job_id].update(result)
-        if _active_mining_job == job_id:
-            _active_mining_job = None
-
 
 # ===========================================================================
 # Routes
@@ -759,6 +775,15 @@ def web_jsqr_library():
     return FileResponse(
         os.path.join(PROJECT_ROOT, "web", "jsqr.js"),
         media_type="application/javascript",
+    )
+
+
+@app.get("/secp256k1.js", include_in_schema=False)
+def web_secp256k1_library():
+    return FileResponse(
+        os.path.join(PROJECT_ROOT, "web", "secp256k1.js"),
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
 
 
@@ -876,6 +901,52 @@ def health():
     return {"status": "ok", "height": len(blockchain.chain) - 1, "version": _CONFIG["node"]["version"], "network": _CONFIG["node"]["network"]}
 
 
+@app.get("/health/details")
+def health_details():
+    tip = blockchain.chain[-1]
+    age = max(0.0, time.time() - float(tip.timestamp)) if tip.index else 0.0
+    target = blockchain.target_block_time_for_height(len(blockchain.chain))
+    warnings = []
+    if tip.index and age > target * 3:
+        warnings.append("latest block is older than three target intervals")
+    if len(blockchain.pending_transactions) >= blockchain.max_pending_transactions * 0.8:
+        warnings.append("mempool is at least 80% full")
+    if tip.index and not get_peers():
+        warnings.append("node has no connected peers")
+    return {
+        "status": "degraded" if warnings else "ok",
+        "warnings": warnings,
+        "height": tip.index,
+        "tip_hash": tip.hash,
+        "tip_age_seconds": age,
+        "target_block_time_seconds": target,
+        "peers": len(get_peers()),
+        "pending_transactions": len(blockchain.pending_transactions),
+        "storage_backend": blockchain.storage_backend,
+        "uptime_seconds": max(0.0, time.time() - NODE_STARTED_AT),
+    }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    """Dependency-free Prometheus metrics for node dashboards and alerts."""
+    tip = blockchain.chain[-1]
+    values = {
+        "helix_chain_height": tip.index,
+        "helix_chain_total_supply": blockchain.get_total_supply(),
+        "helix_mempool_transactions": len(blockchain.pending_transactions),
+        "helix_mempool_capacity": blockchain.max_pending_transactions,
+        "helix_peers": len(get_peers()),
+        "helix_orphan_blocks": len(blockchain.orphan_blocks),
+        "helix_tip_timestamp_seconds": float(tip.timestamp),
+        "helix_process_uptime_seconds": max(0.0, time.time() - NODE_STARTED_AT),
+        "helix_next_difficulty": blockchain.target_to_difficulty(
+            blockchain.expected_target(len(blockchain.chain), blockchain.chain)
+        ),
+    }
+    return "\n".join(f"{name} {value}" for name, value in values.items()) + "\n"
+
+
 @app.get("/nfts")
 def list_nfts(limit: int = 200, offset: int = 0):
     items = blockchain.get_nfts()
@@ -899,6 +970,22 @@ def get_nft(nft_id: str):
         for block, tx in blockchain.get_nft_history(nft_id)
     ]
     return {"nft": nft, "history": history}
+
+
+@app.get("/nft/{nft_id}/market/history")
+def get_nft_market_history(nft_id: str):
+    try:
+        nft_id = validate_hex(nft_id, "nft id", (40,))
+    except ValueError as exc:
+        return {"message": str(exc), "points": []}
+    nft = blockchain.get_nft(nft_id)
+    if nft is None:
+        return {"message": "NFT not found on the confirmed chain", "points": []}
+    return {
+        "nft_id": nft_id,
+        "name": nft["name"],
+        "points": blockchain.get_nft_market_history(nft_id),
+    }
 
 
 @app.get("/nfts/owner/{address}")
@@ -935,6 +1022,17 @@ def stats():
         "target_block_time_seconds": blockchain.target_block_time_for_height(len(blockchain.chain)),
         "token_swap_activation_height": blockchain.token_swap_activation_height,
         "token_swap_active": len(blockchain.chain) >= blockchain.token_swap_activation_height,
+        "nft_market_activation_height": blockchain.nft_market_activation_height,
+        "nft_market_active": len(blockchain.chain) >= blockchain.nft_market_activation_height,
+        "transaction_fee": blockchain.transaction_fee,
+        "transaction_fee_activation_height": blockchain.transaction_fee_activation_height,
+        "transaction_fee_required": len(blockchain.chain) >= blockchain.transaction_fee_activation_height,
+        "chain_id": blockchain.chain_id,
+        "transaction_envelope_activation_height": blockchain.transaction_envelope_activation_height,
+        "transaction_envelope_active": len(blockchain.chain) >= blockchain.transaction_envelope_activation_height,
+        "state_commitment_activation_height": blockchain.state_commitment_activation_height,
+        "state_commitments_active": len(blockchain.chain) >= blockchain.state_commitment_activation_height,
+        "storage_backend": blockchain.storage_backend,
     }
 
 
@@ -999,6 +1097,17 @@ def network_mint_history(limit: int = 1500):
     }
 
 
+def _transaction_response(tx: Transaction) -> dict:
+    """Return a transaction with display metadata for its custom token."""
+    data = tx.to_dict()
+    if tx.mint_address:
+        token = blockchain.get_token(tx.mint_address)
+        if token is not None:
+            data["symbol"] = data.get("symbol") or token.get("symbol")
+            data["decimals"] = token.get("decimals", data.get("decimals"))
+    return data
+
+
 @app.get("/history/{address}")
 def get_history(address: str, include_pending: bool = True, offset: int = 0, limit: int = DEFAULT_PAGE_SIZE):
     try:
@@ -1009,14 +1118,7 @@ def get_history(address: str, include_pending: bool = True, offset: int = 0, lim
     tip = len(blockchain.chain) - 1
     for block, tx in blockchain.get_address_history(address):
         txs.append({
-            "tx_id": tx.tx_id,
-            "sender": tx.sender,
-            "receiver": tx.receiver,
-            "amount": tx.amount,
-            "tx_type": tx.tx_type,
-            "mint_address": tx.mint_address,
-            "dad_address": tx.dad_address,
-            "symbol": tx.symbol,
+            **_transaction_response(tx),
             "block": block.index,
             "timestamp": block.timestamp,
             "direction": "out" if tx.sender == address else "in",
@@ -1027,14 +1129,7 @@ def get_history(address: str, include_pending: bool = True, offset: int = 0, lim
         for tx in blockchain.pending_transactions:
             if tx.sender == address or tx.receiver == address:
                 txs.append({
-                    "tx_id": tx.tx_id,
-                    "sender": tx.sender,
-                    "receiver": tx.receiver,
-                    "amount": tx.amount,
-                    "tx_type": tx.tx_type,
-                    "mint_address": tx.mint_address,
-                    "dad_address": tx.dad_address,
-                    "symbol": tx.symbol,
+                    **_transaction_response(tx),
                     "block": None,
                     "timestamp": tx.received_at,
                     "direction": "out" if tx.sender == address else "in",
@@ -1093,6 +1188,42 @@ def list_tokens(holder: str = ""):
         for token in blockchain.list_tokens(validated_holder)
     ]
     return {"count": len(tokens), "tokens": tokens}
+
+
+@app.get("/leaderboard")
+def wallet_leaderboard(offset: int = 0, limit: int = DEFAULT_PAGE_SIZE):
+    """Public confirmed-address ranking using the wallet's HLX valuation rule."""
+    offset, limit = _page_bounds(offset, limit)
+    rows = blockchain.wallet_leaderboard()
+    return {
+        "total": len(rows),
+        "offset": offset,
+        "limit": limit,
+        "height": len(blockchain.chain) - 1,
+        "valuation": "confirmed HLX plus token spot value from confirmed HLX pools",
+        "nfts_included": False,
+        "entries": rows[offset:offset + limit],
+    }
+
+
+@app.get("/leaderboard/{address}/history")
+def wallet_leaderboard_history(address: str, limit: int = 2000):
+    try:
+        address = validate_hex(address, "address", (40,))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    rows = blockchain.wallet_leaderboard()
+    entry = next((row for row in rows if row["address"] == address), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="funded wallet not found")
+    return {
+        "address": address,
+        "height": len(blockchain.chain) - 1,
+        "entry": entry,
+        "points": blockchain.wallet_value_history(address, limit),
+        "valuation": "confirmed HLX plus token spot value from confirmed HLX pools",
+        "nfts_included": False,
+    }
 
 
 @app.get("/token/{mint_address}")
@@ -1174,7 +1305,7 @@ def get_token_history(mint_address: str, address: str):
     transactions = []
     for block, tx in reversed(blockchain.get_token_history(mint_address, address)):
         transactions.append({
-            **tx.to_dict(),
+            **_transaction_response(tx),
             "block": block.index,
             "timestamp": block.timestamp,
             "confirmations": tip - block.index + 1,
@@ -1195,10 +1326,20 @@ def get_token_history(mint_address: str, address: str):
 def pending():
     return {
         "pending": [
-            {**tx.to_dict(), "received_at": tx.received_at}
+            {**_transaction_response(tx), "received_at": tx.received_at}
             for tx in blockchain.pending_transactions
         ]
     }
+
+
+@app.get("/transaction/envelope/{address}")
+def transaction_envelope(address: str):
+    """Return consensus signing fields for the address's next transaction."""
+    try:
+        address = validate_hex(address, "address", (40,))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return blockchain.envelope_info(address)
 
 
 @app.get("/transactions/recent")
@@ -1208,7 +1349,7 @@ def recent_transactions(limit: int = 25, offset: int = 0):
     transactions = []
     for block, tx in blockchain.get_recent_transactions(bounded_limit, bounded_offset):
         transactions.append({
-            **tx.to_dict(),
+            **_transaction_response(tx),
             "block": block.index,
             "block_hash": block.hash,
             "timestamp": block.timestamp,
@@ -1234,7 +1375,7 @@ def get_transaction(tx_id: str):
         return {"message": str(exc)}
     block, tx = blockchain.find_transaction(tx_id)
     if tx is not None:
-        tx_data = tx.to_dict()
+        tx_data = _transaction_response(tx)
         tx_data["id"] = tx_data.pop("tx_id")
         return {
             "block": block.index,
@@ -1247,7 +1388,7 @@ def get_transaction(tx_id: str):
 
     tx = blockchain.get_pending_transaction(tx_id)
     if tx is not None:
-        tx_data = tx.to_dict()
+        tx_data = _transaction_response(tx)
         tx_data["id"] = tx_data.pop("tx_id")
         return {
             "block": None,
@@ -1278,7 +1419,14 @@ def transaction(data: dict):
     rejection = blockchain.transaction_rejection_reason(tx)
     if rejection is not None:
         return {"accepted": False, "message": rejection, "tx_id": tx.tx_id}
-    if len(blockchain.pending_transactions) >= blockchain.max_pending_transactions:
+    is_replacement = tx.sequence is not None and any(
+        existing.sender == tx.sender and existing.sequence == tx.sequence
+        for existing in blockchain.pending_transactions
+    )
+    if (
+        len(blockchain.pending_transactions) >= blockchain.max_pending_transactions
+        and not is_replacement
+    ):
         return {
             "accepted": False,
             "message": "The transaction pool is full; try again later",
@@ -1423,6 +1571,12 @@ def receive_inventory(data: dict):
 # Mining
 # ---------------------------------------------------------------------------
 
+def _block_fee_total(block: Block) -> int:
+    return sum(
+        blockchain.effective_transaction_fee(tx)
+        for tx in block.transactions if tx.sender != "SYSTEM"
+    )
+
 @app.get("/mining/info")
 def external_mining_info():
     return {
@@ -1443,6 +1597,7 @@ def external_mining_work(address: str):
         block, difficulty, target = blockchain.create_mining_candidate(address)
     except ValueError as exc:
         return {"message": str(exc)}
+    fees = _block_fee_total(block)
     return {
         "block": block_to_dict(block),
         "difficulty": difficulty,
@@ -1451,6 +1606,9 @@ def external_mining_work(address: str):
         # Miners should compare against this; difficulty is kept for display.
         "target": f"{target:064x}",
         "reward": block.transactions[-1].amount,
+        "transaction_fees": fees,
+        "miner_payment": block.transactions[-1].amount + fees,
+        "transaction_fee": blockchain.transaction_fee,
         "network": _CONFIG["node"]["network"],
     }
 
@@ -1473,85 +1631,17 @@ def external_mining_submit(data: dict):
         }
     relay.expire(blockchain.pending_ids())
     broadcast_block(block)
+    fees = _block_fee_total(block)
     return {
         "accepted": True,
         "message": "Block accepted",
         "block": block.index,
         "hash": block.hash,
         "reward": block.transactions[-1].amount,
+        "transaction_fees": fees,
+        "miner_payment": block.transactions[-1].amount + fees,
         "consensus": blockchain.consensus_status(),
     }
-
-@app.post("/mine")
-def mine(address: str):
-    try:
-        address = validate_hex(address, "address", (40,))
-        block = blockchain.mine_pending_transactions(address)
-    except ValueError as exc:
-        return {"message": str(exc)}
-    except RuntimeError as exc:
-        return {"message": f"Mining failed safely: {exc}"}
-    if block is None:
-        return {"message": "No transactions to mine"}
-    broadcast_block(block)
-    return {
-        "message": "Block mined",
-        "block": block.index,
-        "hash": block.hash,
-        "reward": block.transactions[-1].amount,
-    }
-
-
-@app.post("/mine/start")
-def start_mining(address: str):
-    """Start one mining job and return before a tunnel/proxy can time out."""
-    global _active_mining_job
-    try:
-        address = validate_hex(address, "address", (40,))
-    except ValueError as exc:
-        return {"status": "failed", "message": str(exc)}
-
-    now = time.time()
-    with _mining_jobs_lock:
-        # Keep job state bounded; completed results are only needed briefly by UI polling.
-        expired = [
-            key for key, value in _mining_jobs.items()
-            if value.get("status") in {"completed", "failed"}
-            and now - float(value.get("updated_at", now)) > 3600
-        ]
-        for key in expired:
-            _mining_jobs.pop(key, None)
-
-        if _active_mining_job:
-            active = dict(_mining_jobs[_active_mining_job])
-            active["message"] = "Mining is already in progress"
-            return active
-
-        job_id = secrets.token_hex(16)
-        _active_mining_job = job_id
-        _mining_jobs[job_id] = {
-            "job_id": job_id,
-            "status": "mining",
-            "message": "Mining started",
-            "updated_at": now,
-        }
-
-    threading.Thread(target=_run_mining_job, args=(job_id, address), daemon=True).start()
-    return dict(_mining_jobs[job_id])
-
-
-@app.get("/mine/status/{job_id}")
-def mining_status(job_id: str):
-    try:
-        job_id = validate_hex(job_id, "mining job id", (32,))
-    except ValueError as exc:
-        return {"status": "failed", "message": str(exc)}
-    with _mining_jobs_lock:
-        job = _mining_jobs.get(job_id)
-        if job is None:
-            return {"status": "failed", "message": "Mining job was not found"}
-        return dict(job)
-
 
 # ---------------------------------------------------------------------------
 # P2P node management

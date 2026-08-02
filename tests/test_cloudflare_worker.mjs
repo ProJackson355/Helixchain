@@ -10,11 +10,22 @@ const assets = {
   },
 };
 
+const originalFetch = globalThis.fetch;
+let defaultForwarded;
+globalThis.fetch = async url => {
+  defaultForwarded = String(url);
+  return new Response(JSON.stringify({ status: "ok" }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+};
 let response = await worker.fetch(
   new Request("https://wallet.pages.dev/api/health"),
   { ASSETS: assets },
 );
-assert.equal(response.status, 503);
+assert.equal(response.status, 200);
+assert.equal(defaultForwarded, "https://node.hlxchain.com/health");
+globalThis.fetch = originalFetch;
 
 response = await worker.fetch(
   new Request("https://wallet.pages.dev/api/chain/full"),
@@ -29,12 +40,18 @@ response = await worker.fetch(
 assert.equal(response.status, 503);
 
 response = await worker.fetch(
+  new Request("https://wallet.pages.dev/api/health"),
+  { ASSETS: assets, HELIX_NODE_URL: "http://node.example" },
+);
+assert.equal(response.status, 503);
+assert.match(await response.text(), /must use HTTPS/);
+
+response = await worker.fetch(
   new Request("https://wallet.pages.dev/api/mine?address=" + "a".repeat(40), { method: "POST" }),
   { ASSETS: assets, HELIX_NODE_URL: "https://node.example" },
 );
-assert.equal(response.status, 403);
+assert.equal(response.status, 404);
 
-const originalFetch = globalThis.fetch;
 let forwarded;
 globalThis.fetch = async (url, init) => {
   forwarded = { url: String(url), init };
@@ -47,7 +64,13 @@ globalThis.fetch = async (url, init) => {
 try {
   response = await worker.fetch(
     new Request("https://wallet.pages.dev/api/health?probe=1", {
-      headers: { "cf-connecting-ip": "198.51.100.25" },
+      headers: {
+        "cf-connecting-ip": "198.51.100.25",
+        cookie: "session=private",
+        authorization: "Bearer private",
+        referer: "https://private.example/account",
+        "cf-access-jwt-assertion": "private-jwt",
+      },
     }),
     {
       ASSETS: assets,
@@ -59,9 +82,20 @@ try {
   assert.equal(forwarded.url, "https://node.example/base/health?probe=1");
   assert.equal(forwarded.init.headers.get("x-helix-api-key"), "test-secret");
   assert.equal(forwarded.init.headers.get("x-helix-client-ip"), "198.51.100.25");
+  assert.equal(forwarded.init.headers.get("cookie"), null);
+  assert.equal(forwarded.init.headers.get("authorization"), null);
+  assert.equal(forwarded.init.headers.get("referer"), null);
+  assert.equal(forwarded.init.headers.get("cf-access-jwt-assertion"), null);
   assert.equal(response.headers.get("cache-control"), "no-store");
 
   const holder = "a".repeat(40);
+  response = await worker.fetch(
+    new Request(`https://wallet.pages.dev/api/transaction/envelope/${holder}`),
+    { ASSETS: assets, HELIX_NODE_URL: "https://node.example" },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.url, `https://node.example/transaction/envelope/${holder}`);
+
   response = await worker.fetch(
     new Request(`https://wallet.pages.dev/api/tokens?holder=${holder}`),
     { ASSETS: assets, HELIX_NODE_URL: "https://node.example" },
@@ -83,6 +117,14 @@ try {
   );
   assert.equal(response.status, 200);
   assert.equal(forwarded.url, `https://node.example/token/${mint}/market/history`);
+
+  const nft = "d".repeat(40);
+  response = await worker.fetch(
+    new Request(`https://wallet.pages.dev/api/nft/${nft}/market/history`),
+    { ASSETS: assets, HELIX_NODE_URL: "https://node.example" },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.url, `https://node.example/nft/${nft}/market/history`);
 
   const dad = "c".repeat(40);
   response = await worker.fetch(
@@ -146,10 +188,10 @@ try {
         status: String(url).startsWith("https://node-one.example") ? 530 : 200,
       });
     }
-    throw new Error("uncertain mining response");
+    throw new Error("uncertain administrative response");
   };
   response = await worker.fetch(
-    new Request(`https://wallet.pages.dev/api/mine?address=${holder}`, { method: "POST" }),
+    new Request("https://wallet.pages.dev/api/nodes/sync_now", { method: "POST" }),
     {
       ASSETS: assets,
       HELIX_NODE_URL: ["https://node-one.example", "https://node-two.example"],
@@ -160,41 +202,24 @@ try {
   assert.deepEqual(adminCalls, [
     "https://node-one.example/health",
     "https://node-two.example/health",
-    `https://node-two.example/mine?address=${holder}`,
-  ]);
-
-  adminCalls.length = 0;
-  response = await worker.fetch(
-    new Request(`https://wallet.pages.dev/api/mine/start?address=${holder}`, { method: "POST" }),
-    {
-      ASSETS: assets,
-      HELIX_NODE_URL: ["https://node-one.example", "https://node-two.example"],
-      HELIX_ENABLE_ADMIN_API: "true",
-    },
-  );
-  assert.equal(response.status, 502);
-  assert.deepEqual(adminCalls, [
-    "https://node-one.example/health",
-    "https://node-two.example/health",
-    `https://node-two.example/mine/start?address=${holder}`,
+    "https://node-two.example/nodes/sync_now",
   ]);
 
   adminCalls.length = 0;
   const jobId = "d".repeat(32);
-  response = await worker.fetch(
+  for (const request of [
+    new Request(`https://wallet.pages.dev/api/mine?address=${holder}`, { method: "POST" }),
+    new Request(`https://wallet.pages.dev/api/mine/start?address=${holder}`, { method: "POST" }),
     new Request(`https://wallet.pages.dev/api/mine/status/${jobId}`),
-    {
+  ]) {
+    response = await worker.fetch(request, {
       ASSETS: assets,
       HELIX_NODE_URL: ["https://node-one.example", "https://node-two.example"],
       HELIX_ENABLE_ADMIN_API: "true",
-    },
-  );
-  assert.equal(response.status, 502);
-  assert.deepEqual(adminCalls, [
-    "https://node-one.example/health",
-    "https://node-two.example/health",
-    `https://node-two.example/mine/status/${jobId}`,
-  ]);
+    });
+    assert.equal(response.status, 404);
+  }
+  assert.deepEqual(adminCalls, []);
 } finally {
   globalThis.fetch = originalFetch;
 }

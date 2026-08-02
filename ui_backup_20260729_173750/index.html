@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Helix Wallet</title>
+  <!-- PWA: installable on Android, iOS, and desktop -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#7c5cfc" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Helix" />
+  <!-- Open Graph / link preview (Worker rewrites title+description for /?to= payment links) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Helix Wallet" />
+  <meta property="og:title" content="Helix Wallet" />
+  <meta property="og:description" content="Non-custodial wallet for the Helix blockchain." />
+  <meta property="og:image" content="https://wallet.hlxchain.com/icons/icon-512.png" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Helix Wallet" />
+  <meta name="twitter:description" content="Non-custodial wallet for the Helix blockchain." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0d0f14;
+      --surface:  #151920;
+      --surface2: #1c2130;
+      --border:   #252d3d;
+      --accent:   #7c5cfc;
+      --accent2:  #5b8af7;
+      --green:    #3dd68c;
+      --red:      #f06474;
+      --orange:   #ffb86c;
+      --text:     #e2e8f0;
+      --muted:    #8899aa;
+      --radius:   14px;
+      --grad:     linear-gradient(130deg, var(--accent), var(--accent2));
+      --ring:     0 0 0 3px #7c5cfc38;
+      --shadow:   0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(18,14,54,.85);
+      --shadow-lg:0 16px 44px -18px rgba(84,60,220,.5);
+    }
+    body {
+      background: var(--bg); color: var(--text);
+      background-image:
+        radial-gradient(72% 55% at 0% -10%, #7c5cfc22, transparent 60%),
+        radial-gradient(62% 50% at 100% -6%, #5b8af71c, transparent 60%);
+      background-attachment: fixed;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px; line-height: 1.6; min-height: 100vh;
+    }
+    #app { display: flex; flex-direction: column; min-height: 100vh; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 32px; background: linear-gradient(180deg, #171b24, #12151c);
+      border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 40;
+      box-shadow: 0 1px 0 #ffffff08, 0 10px 26px -20px #000;
+    }
+    /* Installed PWA only: the status bar is translucent, so content sits under the
+       notch / Dynamic Island. Push the whole top bar DOWN so it physically begins
+       below the island, with the app background showing in the safe area above it.
+       Using margin-top (not padding) means the bar's dark background starts below
+       the island rather than filling the notch. `top` keeps it below the island
+       when the header sticks on scroll. The browser (display-mode:browser) is left
+       exactly as it was. #app > header outranks the mobile `header` rule so the
+       shift is not clobbered on phones. */
+    @media (display-mode: standalone) {
+      #node-banner { padding-top: calc(10px + env(safe-area-inset-top)); }
+      #app > header { margin-top: env(safe-area-inset-top); top: env(safe-area-inset-top); }
+      /* When the disconnected banner is showing it already fills the safe area, so
+         don't add a second gap above the header. */
+      #node-banner + #app > header { margin-top: 0; top: 0; }
+    }
+    @media (display-mode: standalone) and (max-width: 700px) {
+      #main-nav { padding-top: calc(18px + env(safe-area-inset-top)); }
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; }
+    .logo-hex {
+      width: 32px; height: 32px; background: var(--grad); border-radius: 9px;
+      display: grid; place-items: center; font-size: 17px; object-fit: cover;
+      box-shadow: 0 4px 14px -4px #7c5cfc99;
+    }
+    .token-native-logo { display:inline-grid; flex-shrink:0; color:#fff; }
+    nav { display: flex; gap: 6px; }
+    .mobile-nav-head, .mobile-nav-lock, .menu-toggle, .mobile-nav-backdrop { display:none; }
+    /* Collapsed navigation at ALL widths: the tabs live in a slide-in sidebar
+       opened by the hamburger on the top right (previously mobile-only), so the
+       top bar stays uncluttered and never overlaps the logo. */
+    body.mobile-nav-open { overflow:hidden; }
+    .wallet-unlocked #user-bar { margin-left:auto; }
+    .wallet-unlocked .menu-toggle {
+      display:inline-flex; width:42px; height:42px; padding:0; margin-left:14px;
+      flex-direction:column; align-items:center; justify-content:center; gap:5px;
+      background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+      color:var(--text); cursor:pointer; flex-shrink:0;
+    }
+    .wallet-unlocked .menu-toggle:hover { border-color:var(--accent); color:var(--accent); }
+    .menu-toggle span { width:20px; height:2px; background:currentColor; border-radius:2px; transition:transform .2s,opacity .2s; }
+    .mobile-nav-open .menu-toggle span:nth-child(1) { transform:translateY(7px) rotate(45deg); }
+    .mobile-nav-open .menu-toggle span:nth-child(2) { opacity:0; }
+    .mobile-nav-open .menu-toggle span:nth-child(3) { transform:translateY(-7px) rotate(-45deg); }
+    #main-nav {
+      display:flex !important; position:fixed; inset:0 0 0 auto; width:min(88vw,340px);
+      padding:20px 18px max(22px,env(safe-area-inset-bottom)); flex-direction:column;
+      align-items:stretch; gap:8px; overflow-y:auto; background:var(--surface);
+      border-left:1px solid var(--border); box-shadow:-18px 0 50px #000a;
+      transform:translateX(105%); visibility:hidden; transition:transform .22s ease,visibility .22s;
+      z-index:50;
+    }
+    .mobile-nav-open #main-nav { transform:translateX(0); visibility:visible; }
+    .mobile-nav-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:2px 4px 14px; border-bottom:1px solid var(--border); margin-bottom:5px; }
+    .mobile-nav-head strong { font-size:17px; }
+    .mobile-nav-close { width:38px; height:38px; padding:0; font-size:24px; line-height:1; }
+    #main-nav .nav-btn { width:100%; min-height:45px; padding:10px 14px; text-align:left; font-size:15px; }
+    #main-nav .nav-btn.active { box-shadow:inset 3px 0 0 #fff; }
+    .mobile-nav-lock { display:inline-flex; margin-top:auto; min-height:45px; }
+    .mobile-nav-backdrop { position:fixed; inset:0; z-index:35; background:#05070b66; opacity:0; visibility:hidden; transition:opacity .22s,visibility .22s; }
+    .mobile-nav-open .mobile-nav-backdrop { display:block; opacity:1; visibility:visible; }
+    .nav-btn {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      padding: 7px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
+      transition: all .15s;
+    }
+    .nav-btn:hover { border-color: var(--accent); color: var(--text); }
+    .nav-btn.active {
+      background: var(--grad); border-color: transparent; color: #fff;
+      box-shadow: 0 5px 16px -7px #6c63ffb0;
+    }
+    #user-bar { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+    #hdr-wallet-name { color: var(--text); font-weight: 600; }
+    #hdr-wallet-addr {
+      color: var(--muted); font-family: monospace; font-size: 12px;
+      max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    main { flex: 1; padding: 32px; max-width: 860px; margin: 0 auto; width: 100%; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .card {
+      background: linear-gradient(180deg, #171b24, var(--surface));
+      border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px; margin-bottom: 20px;
+      box-shadow: var(--shadow); position: relative;
+    }
+    .card::before {
+      content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+      background: var(--grad); opacity: .55; pointer-events: none;
+      border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .card-title {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .1em; color: var(--muted); margin-bottom: 20px;
+    }
+    /* Dashboard: a responsive grid instead of one long stack of full-width cards.
+       The balance hero and token list span the full width; the two utility cards
+       sit side by side. */
+    #panel-dashboard.active {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px; align-items: start;
+    }
+    #panel-dashboard .card { margin-bottom: 0; }
+    #panel-dashboard .dash-span { grid-column: 1 / -1; }
+    .dash-hero {
+      background:
+        radial-gradient(130% 150% at 0% 0%, #6c5cff22, transparent 55%),
+        radial-gradient(120% 150% at 100% 0%, #5b8af71a, transparent 55%),
+        linear-gradient(180deg, #191d28, var(--surface));
+    }
+    .dash-balance-row { display: flex; align-items: baseline; gap: 4px; margin: 18px 0 8px; flex-wrap: wrap; }
+    .dash-hero .balance-big { font-size: 54px; }
+    .dash-hero-sub { font-size: 12px; color: var(--muted); max-width: 520px; line-height: 1.55; }
+    .dash-hero-stats { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+    .dash-stat {
+      display: flex; flex-direction: column; gap: 2px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 16px; min-width: 130px;
+    }
+    .dash-stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
+    .dash-stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .dash-addr-mono { font-family: monospace; font-size: 13px; overflow-wrap: anywhere; color: var(--text); }
+    @media (max-width: 700px) {
+      #panel-dashboard.active { grid-template-columns: 1fr; gap: 16px; }
+      .dash-hero .balance-big { font-size: 42px; }
+    }
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    input:not([type=checkbox]):not([type=radio]), select, textarea {
+      width:100%; min-height:43px; color-scheme:dark;
+      background-color:var(--surface2); border:1px solid var(--border);
+      border-radius:9px; color:var(--text); padding:10px 14px; font-size:14px;
+      outline:none; font-family:inherit;
+      transition:border-color .15s, box-shadow .15s, background-color .15s;
+    }
+    select {
+      appearance:none; cursor:pointer; padding-right:42px;
+      background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+      background-position:calc(100% - 19px) 18px,calc(100% - 13px) 18px;
+      background-size:6px 6px,6px 6px; background-repeat:no-repeat;
+    }
+    input:hover, select:hover, textarea:hover { border-color:#46506b; }
+    input:focus, select:focus, textarea:focus { border-color:var(--accent); box-shadow:var(--ring); background-color:#202638; }
+    input::placeholder, textarea::placeholder { color:#697086; opacity:1; }
+    input:disabled, select:disabled, textarea:disabled { opacity:.55; cursor:not-allowed; }
+    select option { background:var(--surface2); color:var(--text); }
+    textarea { resize: vertical; min-height: 72px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      padding: 10px 22px; border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer; border: none; transition: opacity .15s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-primary { background: var(--grad); color: #fff; box-shadow: 0 6px 18px -8px #6c63ffaa; }
+    .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+    .btn-success { background: var(--green); color: #0a1f11; }
+    .btn-success:hover:not(:disabled) { opacity: .85; }
+    .btn-danger { background:#3a1118; border:1px solid var(--red); color:var(--red); }
+    .btn-danger:hover:not(:disabled) { background:var(--red); color:#fff; }
+    .btn-ghost { background: none; border: 1px solid var(--border); color: var(--muted); }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .btn-sm { padding: 6px 14px; font-size: 13px; }
+    .btn-full { width: 100%; }
+    .btn-link {
+      background: none; border: none; color: var(--accent); cursor: pointer;
+      font-size: 13px; padding: 0; text-decoration: underline;
+    }
+    .btn-link:hover { opacity: .75; }
+    .auth-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+    .auth-tab {
+      background: none; border: none; color: var(--muted); padding: 10px 20px;
+      cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent;
+      margin-bottom: -1px; transition: all .15s;
+    }
+    .auth-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+    .auth-pane { display: none; }
+    .auth-pane.active { display: block; }
+    .balance-big {
+      font-size: 46px; font-weight: 800;
+      background: linear-gradient(130deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      line-height: 1.1;
+    }
+    .balance-unit { font-size: 20px; color: var(--muted); margin-left: 8px; }
+    .addr-row {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px;
+      font-family: monospace; font-size: 13px; word-break: break-all;
+    }
+    .copy-btn {
+      flex-shrink: 0; background: none; border: 1px solid var(--border);
+      color: var(--muted); padding: 4px 10px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; transition: all .12s;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .seed-box {
+      background: #1a0a00; border: 1px solid #7a4400;
+      border-radius: 10px; padding: 20px; margin: 16px 0;
+    }
+    .seed-warn {
+      display: flex; gap: 10px; align-items: flex-start;
+      background: #2e1800; border: 1px solid #7a4400; border-radius: 8px;
+      padding: 12px 16px; color: var(--orange); font-size: 13px; margin-bottom: 16px;
+    }
+    .seed-warn-icon { font-size: 18px; flex-shrink: 0; }
+    .seed-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    @media(max-width:560px) { .seed-grid { grid-template-columns: repeat(3,1fr); } }
+    .seed-word {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 8px 10px; font-size: 13px;
+      display: flex; align-items: center; gap: 7px;
+    }
+    .seed-num { color: var(--muted); font-size: 11px; min-width: 16px; }
+    .seed-w   { font-weight: 600; font-family: monospace; }
+    .tx-list { display: flex; flex-direction: column; gap: 8px; }
+    .tx-row {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 13px 16px;
+    }
+    .tx-row-action {
+      width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer;
+      transition: border-color .15s, transform .1s, background .15s;
+    }
+    .tx-row-action:hover { border-color: var(--accent); background: #202638; }
+    .tx-row-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .tx-row-action:active { transform: scale(.995); }
+    .tx-icon { width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font-size: 16px; }
+    .tx-icon.in  { background:#0d2d1e; color:var(--green); }
+    .tx-icon.out { background:#2d0d14; color:var(--red);   }
+    .tx-icon.sys { background:#151030; color:var(--accent2);}
+    .tx-body { flex: 1; min-width: 0; }
+    .tx-label { font-size: 13px; font-weight: 600; }
+    .tx-sub { font-size: 12px; color: var(--muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tx-right { text-align: right; flex-shrink: 0; }
+    .tx-amount { font-size: 15px; font-weight: 700; }
+    .tx-amount.in  { color: var(--green); }
+    .tx-amount.out { color: var(--red);   }
+    .tx-amount.sys { color: var(--accent2);}
+    .tx-meta { font-size: 11px; color: var(--muted); font-family: monospace; margin-top: 2px; }
+    .alert { border-radius: 8px; padding: 11px 15px; font-size: 13px; margin-bottom: 14px; white-space: pre-line; }
+    .alert-err  { background:#2d0d14; border:1px solid var(--red);    color:var(--red);    }
+    .alert-ok   { background:#0d2d1e; border:1px solid var(--green);  color:var(--green);  }
+    .alert-info { background:#0e1530; border:1px solid var(--accent2); color:var(--accent2);}
+    .alert-warn { background:#2e1800; border:1px solid var(--orange); color:var(--orange); }
+    #toast {
+      position: fixed; bottom: 26px; right: 26px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 13px 20px; font-size: 14px;
+      box-shadow: 0 8px 32px #0009; max-width: 320px;
+      opacity: 0; transform: translateY(12px);
+      transition: all .22s; pointer-events: none; z-index: 999;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.ok  { border-color: var(--green); }
+    #toast.err { border-color: var(--red);   }
+    .spinner {
+      display: inline-block; width: 15px; height: 15px;
+      border: 2px solid #ffffff33; border-top-color: #fff;
+      border-radius: 50%; animation: spin .55s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { text-align: center; color: var(--muted); padding: 30px; font-size: 14px; }
+    .mt8  { margin-top: 8px; }
+    .mt16 { margin-top: 16px; }
+    .mt20 { margin-top: 20px; }
+    .divider { border:none; border-top:1px solid var(--border); margin:18px 0; }
+    .node-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 4px 12px; font-size: 12px; color: var(--muted);
+    }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--green); }
+    .dot.syncing { background: var(--orange); animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .sync-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+    #node-banner {
+      display: none; align-items: center; gap: 10px;
+      padding: 10px 32px; font-size: 13px;
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+    }
+    #node-banner .btn-link { font-size: 13px; }
+    .peer-row {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 14px; margin-bottom: 6px;
+      font-size: 13px; font-family: monospace;
+    }
+    .peer-status { display:flex; align-items:center; gap:6px; }
+    .audit-grid {
+      display: grid; grid-template-columns: 48px 1fr 80px;
+      gap: 1px; background: var(--border);
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+      font-size: 12px; font-family: monospace;
+    }
+    .audit-grid > div { background: var(--surface2); padding: 7px 10px; }
+    .audit-hdr { background: var(--surface) !important; color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+    .audit-ok   { color: var(--green); font-weight: 700; }
+    .audit-fail { color: var(--red);   font-weight: 700; }
+    .audit-reason { grid-column: 1 / -1; background: #2d0d14 !important; color: var(--red); font-size: 11px; padding: 5px 10px; border-top: 1px solid var(--border); }
+    .audit-summary { display: flex; gap: 16px; align-items: center; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+    .audit-summary.ok  { background:#0d2d1e; border:1px solid var(--green); color:var(--green); }
+    .audit-summary.bad { background:#2d0d14; border:1px solid var(--red);   color:var(--red);   }
+    .audit-big { font-size: 22px; font-weight: 800; }
+    #hdr-sync-pill {
+      display: none; align-items: center; gap: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 20px; padding: 4px 10px; font-size: 12px; color: var(--muted);
+    }
+    #hdr-sync-pill.visible { display: flex; }
+    .local-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #0e1a0e; border: 1px solid var(--green);
+      border-radius: 20px; padding: 4px 11px; font-size: 11px; color: var(--green);
+      white-space: nowrap; flex-shrink: 0; line-height: 1;
+    }
+    .token-layout { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .token-tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; }
+    .token-tab, .nft-tab {
+      border:1px solid var(--border); background:var(--surface2); color:var(--muted);
+      border-radius:8px; padding:9px 14px; cursor:pointer; font:inherit; font-weight:700;
+      white-space:nowrap;
+    }
+    .token-tab:hover, .token-tab.active, .nft-tab:hover, .nft-tab.active { color:var(--text); border-color:var(--accent); background:#1d2340; }
+    .token-pane, .nft-pane { display:none; }
+    .token-pane.active, .nft-pane.active { display:block; }
+    .token-list { display:grid; grid-template-columns:1fr; gap:10px; }
+    #token-discovery-list.token-list { grid-template-columns:1fr; gap:8px; }
+    .token-card {
+      background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+      padding:14px; cursor:pointer; text-align:left; color:inherit; font:inherit;
+      display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:start;
+    }
+    .token-card:hover, .token-card.selected { border-color:var(--accent); }
+    .token-avatar { width:38px; height:38px; object-fit:cover; border-radius:50%; background:var(--surface); }
+    .token-symbol { color:var(--accent2); font-size:12px; font-weight:800; letter-spacing:.08em; }
+    .token-address { color:var(--muted); font:11px monospace; overflow-wrap:anywhere; margin-top:5px; }
+    .token-card .token-address { display:block; }
+    .token-balance { font-size:20px; font-weight:800; margin-top:8px; }
+    .token-selected-info { background:var(--surface2); border:1px solid var(--border); border-radius:9px; padding:12px; margin-bottom:14px; }
+    .metadata-preview { display:flex; gap:12px; align-items:flex-start; background:var(--surface2); border:1px solid var(--border); border-radius:9px; padding:12px; margin-bottom:14px; }
+    .metadata-preview img { width:72px; height:72px; object-fit:cover; border-radius:9px; background:var(--surface); }
+    .metadata-description { color:var(--muted); font-size:12px; margin-top:5px; white-space:pre-wrap; }
+    .price-chart-card { margin-top:16px; padding:14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; }
+    .price-chart-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-bottom:10px; }
+    .price-chart-summary { color:var(--muted); font-size:11px; text-align:right; }
+    .chart-viewport {
+      position:relative; width:100%; height:320px; min-height:220px; max-height:720px;
+      overflow:hidden; border:1px solid var(--border); border-radius:9px;
+      background:#0b0e16; touch-action:none; user-select:none; cursor:crosshair;
+    }
+    .chart-scroll { width:100%; overflow-x:auto; overscroll-behavior:contain; padding-bottom:3px; }
+    .chart-scroll .chart-viewport { min-width:100%; flex:none; }
+    .price-chart-svg { display:block; width:100%; height:100%; }
+    .price-chart-controls { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
+    .chart-size-control { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
+    .chart-size-control input[type=range] { width:120px; min-height:32px; padding:0; accent-color:var(--accent); }
+    .price-chart-ranges { display:flex; align-items:center; gap:4px; margin-right:auto; }
+    .chart-range-btn { background:var(--card); color:var(--muted); border:1px solid var(--border); border-radius:7px; padding:5px 10px; font-size:11px; font-weight:600; cursor:pointer; min-height:32px; }
+    .chart-range-btn:hover { color:var(--text); border-color:var(--accent); }
+    .chart-range-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .chart-start-control { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
+    .chart-start-control input[type=datetime-local] { min-height:32px; padding:3px 6px; font-size:11px; color:var(--text); background:var(--card); border:1px solid var(--border); border-radius:7px; accent-color:var(--accent); }
+    @media (max-width:640px) {
+      .price-chart-ranges { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); width:100%; margin-right:0; }
+      .price-chart-ranges .chart-range-btn { width:100%; padding-left:6px; padding-right:6px; }
+      .chart-start-control { width:100%; }
+      .chart-start-control input[type=datetime-local] { flex:1; width:auto; min-width:0; }
+      .chart-help { align-items:flex-start; flex-direction:column; }
+    }
+    .chart-resize-handle {
+      display:flex; align-items:center; justify-content:center; height:18px; margin-top:5px;
+      color:var(--muted); cursor:nwse-resize; touch-action:none; font-size:17px; letter-spacing:3px;
+    }
+    .chart-resize-handle::before { content:'•••'; transform:rotate(90deg); }
+    .chart-tooltip {
+      position:absolute; z-index:2; pointer-events:none; display:none; min-width:150px;
+      padding:7px 9px; border:1px solid var(--border); border-radius:7px;
+      background:#111621ed; box-shadow:0 8px 24px #0008; color:var(--text);
+      font:11px/1.45 monospace;
+    }
+    .chart-tooltip.visible { display:block; }
+    .chart-crosshair { stroke:#8899aa88; stroke-width:1; stroke-dasharray:4 4; pointer-events:none; }
+    .chart-hit-area { fill:transparent; cursor:grab; }
+    .chart-hit-area:active { cursor:grabbing; }
+    .chart-help { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:5px; }
+    .chart-grid { stroke:var(--border); stroke-width:1; }
+    .chart-axis-label { fill:var(--muted); font:11px monospace; }
+    .chart-line { fill:none; stroke:var(--accent2); stroke-width:3; stroke-linejoin:round; stroke-linecap:round; }
+    .chart-segment { fill:none; stroke:var(--accent2); stroke-width:3; stroke-linecap:round; }
+    .chart-segment.bullish { stroke:var(--green); }
+    .chart-segment.bearish { stroke:var(--red); }
+    .chart-candle .candle-wick { stroke:var(--accent2); stroke-width:1.4; }
+    .chart-candle .candle-body { fill:var(--accent2); stroke:var(--accent2); stroke-width:1; }
+    .chart-candle.bullish .candle-wick, .chart-candle.bullish .candle-body { stroke:var(--green); }
+    .chart-candle.bullish .candle-body { fill:var(--green); }
+    .chart-candle.bearish .candle-wick, .chart-candle.bearish .candle-body { stroke:var(--red); }
+    .chart-candle.bearish .candle-body { fill:var(--red); }
+    .chart-candle.carried { opacity:.38; }
+    .chart-point { fill:var(--surface2); stroke:var(--accent2); stroke-width:2; }
+    .price-chart-card.bullish .chart-line { stroke:var(--green); }
+    .price-chart-card.bullish .chart-point { stroke:var(--green); }
+    .price-chart-card.bearish .chart-line { stroke:var(--red); }
+    .price-chart-card.bearish .chart-point { stroke:var(--red); }
+    .chart-trend.bullish { color:var(--green); }
+    .chart-trend.bearish { color:var(--red); }
+    .chart-trend.neutral { color:var(--accent2); }
+    .native-supply { margin-top:16px; padding:14px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; }
+    .native-supply-head { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin-bottom:8px; }
+    .native-supply-head strong { color:var(--text); }
+    .native-supply-track { height:10px; overflow:hidden; border-radius:20px; background:#090c14; border:1px solid var(--border); }
+    .native-supply-track span { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),var(--accent2)); }
+    .pagination { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:7px; margin-top:18px; }
+    .page-btn {
+      min-width:36px; height:36px; padding:0 10px; border:1px solid var(--border);
+      border-radius:8px; background:var(--surface2); color:var(--muted); cursor:pointer; font:inherit;
+    }
+    .page-btn:hover:not(:disabled), .page-btn.active { border-color:var(--accent); color:var(--text); background:#1d2340; }
+    .page-btn.active { color:var(--accent2); font-weight:800; }
+    .page-btn:disabled { cursor:default; opacity:.55; }
+    .docs-hero { display:flex; flex-direction:column; align-items:flex-start; gap:18px; }
+    .docs-hero h2 { font-size:26px; margin-bottom:8px; }
+    .docs-hero p, .docs-section p { color:var(--muted); font-size:13px; line-height:1.65; }
+    .docs-downloads { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; width:100%; }
+    .docs-downloads .btn { display:flex; align-items:center; justify-content:center; min-height:46px; text-decoration:none; text-align:center; }
+    .docs-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px; }
+    .docs-section ol, .docs-section ul { padding-left:20px; color:var(--muted); font-size:13px; line-height:1.65; }
+    .docs-section li + li { margin-top:8px; }
+    .docs-section strong { color:var(--text); }
+    .docs-section code { color:var(--accent2); background:#0b0e16; border:1px solid var(--border); border-radius:5px; padding:1px 5px; overflow-wrap:anywhere; }
+    @media(max-width:700px) {
+      .token-layout { grid-template-columns:1fr; }
+      header { padding:11px 14px; min-height:58px; flex-wrap:nowrap; gap:10px; z-index:40; }
+      .logo { font-size:18px; }
+      .logo-hex { width:30px; height:30px; }
+      .wallet-unlocked .menu-toggle { margin-left:0; }
+      #main-nav { width:min(84vw,330px); }
+      #user-bar { min-width:0; }
+      #user-bar > .local-badge, #user-bar > div:not(#hdr-sync-pill), #btn-logout { display:none; }
+      #hdr-sync-pill.visible { max-width:130px; overflow:hidden; }
+      main { padding:18px 12px; }
+      .card { padding:18px; }
+      /* Let long button labels wrap within the button instead of overflowing. */
+      .btn { white-space:normal; padding-left:16px; padding-right:16px; line-height:1.2; }
+      .btn-sm { padding:7px 12px; }
+      .addr-row { display:grid; grid-template-columns:minmax(0,1fr); gap:9px; }
+      .addr-row > span { min-width:0; overflow-wrap:anywhere; word-break:break-word; font-size:11px; }
+      .addr-row .btn, .addr-row .copy-btn { width:100%; min-height:38px; }
+      .token-list { grid-template-columns:1fr; }
+      .token-card { grid-template-columns:auto minmax(0,1fr); }
+      .token-card .token-balance { grid-column:2; margin-top:0; font-size:17px; }
+      .price-chart-card { padding:10px 8px; }
+      .price-chart-head { align-items:flex-start; flex-direction:column; }
+      .price-chart-summary { text-align:left; }
+      .chart-viewport { min-height:220px; height:300px; }
+      .price-chart-controls { align-items:flex-start; flex-direction:column; }
+      .chart-size-control { width:100%; }
+      .chart-size-control input[type=range] { flex:1; width:auto; }
+      .metadata-preview { flex-direction:column; }
+      .docs-downloads { grid-template-columns:1fr; }
+      .docs-grid { grid-template-columns:1fr; }
+      #panel-nodes > .nodes-grid { grid-template-columns:minmax(0,1fr) !important; gap:0 !important; }
+      #panel-nodes .peer-add-row { flex-direction:column; }
+      #panel-nodes .peer-add-row .btn { width:100%; min-height:43px; }
+      #panel-nodes .peer-row { align-items:flex-start; flex-direction:column; gap:8px; overflow-wrap:anywhere; }
+      #panel-nodes .node-section-head { align-items:flex-start !important; flex-direction:column; gap:10px; }
+      #panel-nodes .node-section-head .btn { width:100%; }
+      #panel-nodes .audit-grid { grid-template-columns:38px minmax(0,1fr) 64px; font-size:11px; }
+      #panel-nodes .audit-grid > div { min-width:0; padding:7px 6px; overflow-wrap:anywhere; }
+      #panel-nodes .audit-summary { align-items:flex-start; }
+      #panel-nodes .card { overflow:hidden; }
+      #panel-leaderboard .leaderboard-head,
+      #panel-leaderboard .leaderboard-detail-head { align-items:stretch !important; flex-direction:column; }
+      #panel-leaderboard .leaderboard-head .btn,
+      #panel-leaderboard .leaderboard-detail-head .btn { width:100%; }
+      #panel-leaderboard .leaderboard-detail-head .token-address { overflow-wrap:anywhere; }
+      #panel-leaderboard .tx-row {
+        display:grid; grid-template-columns:42px minmax(0,1fr); align-items:start;
+        column-gap:11px; row-gap:5px; padding:13px;
+      }
+      #panel-leaderboard .tx-icon { grid-row:1 / 3; }
+      #panel-leaderboard .tx-sub { overflow-wrap:anywhere; white-space:normal; }
+      #panel-leaderboard .tx-right {
+        grid-column:2; display:flex; align-items:baseline; justify-content:space-between;
+        gap:9px; text-align:left;
+      }
+      #panel-leaderboard .tx-meta { margin-top:0; }
+      #leaderboard-worth-chart { min-width:0; }
+    }
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: #06080dbd; padding: 24px; align-items: center; justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      width: min(680px, 100%); max-height: calc(100vh - 48px); overflow-y: auto;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      box-shadow: 0 24px 80px #000c;
+    }
+    .modal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 22px; border-bottom: 1px solid var(--border);
+    }
+    .modal-head h2 { font-size: 18px; }
+    .modal-close {
+      width: 34px; height: 34px; padding: 0; border-radius: 8px; font-size: 20px;
+    }
+    .modal-body { padding: 22px; }
+    .detail-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+    .detail-label, .detail-value { background: var(--surface2); padding: 10px 12px; }
+    .detail-label { color: var(--muted); font-size: 12px; }
+    .detail-value { font-family: monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .status-badge { display: inline-block; border-radius: 20px; padding: 2px 9px; font-family: inherit; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .status-badge.confirmed { color: var(--green); border: 1px solid var(--green); background: #0d2d1e; }
+    .status-badge.pending { color: var(--orange); border: 1px solid var(--orange); background: #2e1800; }
+    .nft-detail-head { display:grid; grid-template-columns:160px minmax(0,1fr); gap:18px; align-items:start; }
+    .nft-detail-head > img { width:160px; height:160px; border-radius:12px; object-fit:cover; background:var(--surface2); }
+    .nft-detail-head h3 { font-size:21px; margin-bottom:5px; }
+    .nft-detail-head p { color:var(--muted); font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .nft-detail-traits { display:flex; flex-wrap:wrap; gap:5px; margin-top:10px; }
+    .nft-detail-trait { border:1px solid var(--border); background:var(--surface2); border-radius:7px; padding:3px 8px; font-size:11px; }
+    .nft-detail-trait span { color:var(--muted); }
+    .nft-detail-history { display:grid; gap:6px; }
+    .nft-history-row { display:flex; justify-content:space-between; gap:12px; width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); text-align:left; cursor:pointer; }
+    .nft-history-row span { text-transform:capitalize; }
+    .nft-history-row small { color:var(--muted); }
+    @media(max-width:560px) {
+      .modal-backdrop { padding: 10px; }
+      .modal-card { max-height:calc(100dvh - 20px); }
+      .modal-body { padding:16px; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .detail-label { padding-bottom: 3px; }
+      .detail-value { padding-top: 3px; }
+      .nft-detail-head { grid-template-columns:96px minmax(0,1fr); gap:12px; }
+      .nft-detail-head > img { width:96px; height:96px; }
+      .nft-history-row { flex-direction:column; gap:2px; }
+      .nft-card-actions .btn { flex:1 1 130px; }
+    }
+  </style>
+</head>
+<body>
+<div id="node-banner" style="display:none">
+  <div class="dot" id="banner-dot" style="background:var(--orange);animation:pulse 1s ease-in-out infinite"></div>
+  <span id="banner-text">Searching for Helix node…</span>
+</div>
+
+<div id="app">
+<header>
+  <div class="logo">
+    <img class="logo-hex" src="/icons/icon-maskable-512.png" alt="Helix logo" width="32" height="32" />
+    Helix
+  </div>
+  <nav id="main-nav" style="display:none">
+    <div class="mobile-nav-head">
+      <strong>Menu</strong>
+      <button type="button" class="btn btn-ghost mobile-nav-close" id="btn-close-mobile-nav" aria-label="Close navigation">&times;</button>
+    </div>
+    <button class="nav-btn active" data-panel="dashboard">Dashboard</button>
+    <button class="nav-btn" data-panel="send">Send</button>
+    <button class="nav-btn" data-panel="tokens">Tokens</button>
+    <button class="nav-btn" data-panel="nft">NFTs</button>
+    <button class="nav-btn" data-panel="history">History</button>
+    <button class="nav-btn" data-panel="activity">Activity</button>
+    <button class="nav-btn" data-panel="leaderboard">Leaderboard</button>
+    <button class="nav-btn" data-panel="nodes">Nodes</button>
+    <button class="nav-btn" data-panel="explorer">Explorer</button>
+    <button class="nav-btn" data-panel="pools">Pools</button>
+    <button class="nav-btn" data-panel="docs">Docs</button>
+    <button type="button" class="btn btn-danger mobile-nav-lock" id="btn-mobile-logout">Lock wallet</button>
+  </nav>
+  <div id="user-bar" style="display:none">
+    <div id="hdr-sync-pill"><div class="dot syncing"></div><span id="hdr-sync-text">Syncing…</span></div>
+    <span class="local-badge">Stored locally</span>
+    <div>
+      <div id="hdr-wallet-name"></div>
+      <div id="hdr-wallet-addr"></div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="btn-logout">Lock</button>
+  </div>
+  <button type="button" class="menu-toggle" id="btn-mobile-nav" aria-label="Open navigation" aria-controls="main-nav" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+<button type="button" class="mobile-nav-backdrop" id="mobile-nav-backdrop" aria-label="Close navigation"></button>
+
+<main>
+
+<!-- AUTH -->
+<div id="panel-auth" class="panel active">
+  <div style="max-width:440px;margin:56px auto">
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-pane="login">Unlock</button>
+      <button class="auth-tab" data-pane="create">New Wallet</button>
+      <button class="auth-tab" data-pane="recover">Recover</button>
+    </div>
+
+    <!-- UNLOCK -->
+    <div id="pane-login" class="auth-pane active">
+      <div class="card">
+        <div class="card-title">Unlock Local Wallet</div>
+        <div class="alert alert-info" style="margin-bottom:16px">
+          Your wallet is stored encrypted on this device. The password decrypts it locally — it is never sent anywhere.
+        </div>
+        <div id="login-alert"></div>
+        <div class="field">
+          <label>Wallet Name</label>
+          <input id="login-name" type="text" placeholder="Type your wallet name" autocomplete="username" autocapitalize="none" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <button class="btn btn-primary btn-full mt8" id="btn-login">Unlock</button>
+      </div>
+    </div>
+
+    <!-- CREATE -->
+    <div id="pane-create" class="auth-pane">
+      <div class="card">
+        <div class="card-title">New Wallet</div>
+        <div id="create-alert"></div>
+        <div id="create-step-form">
+          <div class="field">
+            <label>Wallet Name</label>
+            <input id="create-name" type="text" placeholder="my-wallet" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input id="create-pass" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label>Confirm Password</label>
+            <input id="create-pass2" type="password" placeholder="Repeat password" autocomplete="new-password" />
+          </div>
+          <button class="btn btn-primary btn-full mt8" id="btn-create">Create Wallet</button>
+        </div>
+        <div id="create-step-seed" style="display:none">
+          <div class="seed-warn">
+            <span class="seed-warn-icon">⚠️</span>
+            <div>
+              <strong>Write these 12 words down now.</strong> This is the only time they will be shown.
+              Your wallet is stored locally on this device — the seed phrase is the only way to recover it.
+            </div>
+          </div>
+          <div class="seed-grid" id="seed-reveal-grid"></div>
+          <div class="field mt16">
+            <label>Your address</label>
+            <div class="addr-row">
+              <span id="seed-reveal-addr" style="flex:1"></span>
+              <button class="copy-btn" data-copy-id="seed-reveal-addr">Copy</button>
+            </div>
+          </div>
+          <button class="btn btn-success btn-full mt16" id="btn-seed-saved">
+            ✓ I have written down my seed phrase — Continue
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECOVER -->
+    <div id="pane-recover" class="auth-pane">
+      <div class="card">
+        <div class="card-title">Recover Wallet from Seed Phrase</div>
+        <div id="recover-alert"></div>
+        <div class="alert alert-info" style="margin-bottom:16px">
+          Enter your 12-word seed phrase to restore your wallet locally with a new password.
+        </div>
+        <div class="field">
+          <label>Wallet Name</label>
+          <input id="recover-name" type="text" placeholder="my-wallet" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>Seed Phrase (12 words, space-separated)</label>
+          <textarea id="recover-seed" placeholder="word1 word2 … word12"></textarea>
+        </div>
+        <div class="field">
+          <label>New Password</label>
+          <input id="recover-pass" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label>Confirm New Password</label>
+          <input id="recover-pass2" type="password" placeholder="Repeat password" autocomplete="new-password" />
+        </div>
+        <button class="btn btn-primary btn-full mt8" id="btn-recover">Recover Wallet</button>
+
+        <div style="border-top:1px solid var(--border);margin-top:22px;padding-top:18px">
+          <div class="card-title" style="font-size:15px">Restore from Backup File</div>
+          <div id="restore-alert"></div>
+          <p style="font-size:13px;color:var(--muted);margin:6px 0 14px">Have a wallet backup file you downloaded earlier? Load it back in here, then unlock it with the password you used when you created the wallet.</p>
+          <div class="field">
+            <label>Wallet name (optional — defaults to the backup's name)</label>
+            <input id="restore-name" type="text" placeholder="my-wallet" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Backup file (.json)</label>
+            <input id="restore-file" type="file" accept="application/json,.json" />
+          </div>
+          <button class="btn btn-primary btn-full mt8" id="btn-restore-file">Restore Wallet from File</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /panel-auth -->
+
+<!-- DASHBOARD -->
+<div id="panel-dashboard" class="panel">
+  <div class="card dash-hero dash-span">
+    <div class="sync-row">
+      <div class="card-title" style="margin-bottom:0">Total Value</div>
+      <div class="node-pill"><div class="dot" id="sync-dot"></div><span id="sync-label">Synced</span></div>
+    </div>
+    <div class="dash-balance-row">
+      <span class="balance-big" id="dash-balance">—</span>
+      <span class="balance-unit">HLX</span>
+    </div>
+    <div class="dash-hero-sub">
+      Total value of your wallet, priced in HLX (HLX is the stable unit of account). Your actual HLX holdings appear in the list below.
+    </div>
+    <div class="dash-hero-stats">
+      <div class="dash-stat">
+        <span class="dash-stat-value" id="dash-pending-count">—</span>
+        <span class="dash-stat-label">Pending on network</span>
+      </div>
+    </div>
+    <div class="field" style="margin-top:20px;margin-bottom:0">
+      <label>Your Address</label>
+      <div class="addr-row">
+        <span id="dash-addr" class="dash-addr-mono" style="flex:1"></span>
+        <button class="copy-btn" data-copy-id="dash-addr">Copy</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-ghost btn-sm" id="btn-dash-refresh">↻ Refresh</button>
+      <button class="btn btn-ghost btn-sm" id="btn-sync-now">⇄ Sync with peers</button>
+    </div>
+  </div>
+  <div class="card dash-span">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">Your Tokens</div>
+      <button class="btn btn-ghost btn-sm" id="btn-dash-tokens">Open Tokens</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Every confirmed token with a balance in this wallet appears here, even when someone else created or manages it.</p>
+    <div id="dash-token-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Backup &amp; Restore</div>
+    <div id="backup-alert"></div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Download an encrypted backup file of this wallet. It stays protected by your password and holds the keys that control your on-chain assets, so you can restore access on any device. Keep it somewhere safe.</p>
+    <button class="btn btn-primary" id="btn-export-wallet" type="button">⬇ Download Wallet Backup</button>
+  </div>
+  <div class="card">
+    <div class="card-title">Wallet Security</div>
+    <div id="delete-wallet-alert"></div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Delete this wallet's encrypted local record from this browser. Blockchain funds are not deleted and can only be accessed again with the seed phrase or a backup file.</p>
+    <button class="btn btn-danger" id="btn-delete-wallet" type="button">Delete This Wallet</button>
+  </div>
+</div>
+
+<!-- SEND -->
+<div id="panel-send" class="panel">
+  <div class="card" style="max-width:520px">
+    <div class="card-title">Send Crypto</div>
+    <div id="send-alert"></div>
+    <div class="field">
+      <label>Asset</label>
+      <select id="send-asset"><option value="HLX">Helix (HLX)</option></select>
+    </div>
+    <div class="field">
+      <label>Recipient Address (40 hex characters)</label>
+      <input id="send-to" type="text" placeholder="a1b2c3…" autocomplete="off" />
+      <button class="btn btn-ghost btn-sm" id="btn-scan-qr" type="button" style="margin-top:8px">📷&nbsp; Scan a QR code</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <select id="send-contact" style="flex:1"><option value="">— saved contacts —</option></select>
+        <button class="btn btn-ghost btn-sm" id="btn-save-contact" type="button" title="Save the recipient above as a contact">Save</button>
+        <button class="btn btn-ghost btn-sm" id="btn-del-contact" type="button" title="Remove the selected contact">🗑</button>
+      </div>
+    </div>
+    <div class="field">
+      <label id="send-amount-label">Amount (HLX)</label>
+      <input id="send-amount" inputmode="decimal" placeholder="0" />
+    </div>
+    <div style="display:flex;justify-content:space-between;color:var(--muted);font-size:13px;margin:-3px 0 12px">
+      <span>Network fee</span><strong id="send-network-fee" style="color:var(--text)">1 HLX</strong>
+    </div>
+    <button class="btn btn-primary btn-full mt8" id="btn-send">Send HLX</button>
+  </div>
+  <div class="card" style="max-width:520px">
+    <div class="card-title">Receive</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Share your address to receive HLX or custom tokens from anyone on the network.</p>
+    <div class="addr-row">
+      <span id="recv-addr" style="flex:1"></span>
+      <button class="copy-btn" data-copy-id="recv-addr">Copy</button>
+    </div>
+    <div id="recv-qr-wrap" style="display:none;justify-content:center;margin-top:16px">
+      <div id="recv-qr" style="background:#fff;padding:12px;border-radius:12px;line-height:0"></div>
+    </div>
+    <div class="field" style="margin-top:16px;margin-bottom:0">
+      <label>Request a specific amount (optional)</label>
+      <input id="recv-amount" inputmode="decimal" placeholder="0" autocomplete="off" />
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:10px 0 4px">Share this payment link — it opens the wallet with the recipient (and amount) filled in:</p>
+    <div class="addr-row">
+      <span id="recv-link" style="flex:1;font-size:12px">—</span>
+      <button class="copy-btn" data-copy-id="recv-link">Copy link</button>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">Pending Transactions</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-pending">Refresh</button>
+    </div>
+    <div id="pending-alert"></div>
+    <div id="pending-list"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+
+<!-- TOKENS -->
+<div id="panel-tokens" class="panel">
+  <div class="token-tabs" role="tablist" aria-label="Token sections">
+    <button class="token-tab active" type="button" data-token-pane="wallet">My Tokens</button>
+    <button class="token-tab" type="button" data-token-pane="discover">Discover</button>
+    <button class="token-tab" type="button" data-token-pane="swap">Swap</button>
+    <button class="token-tab" type="button" data-token-pane="manage">Management</button>
+    <button class="token-tab" type="button" data-token-pane="create">Create Token</button>
+  </div>
+
+  <div id="token-pane-discover" class="token-pane">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Discover Tokens</div>
+        <button class="btn btn-ghost btn-sm" id="btn-refresh-discover-tokens">Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Browse every confirmed token created on Helix, including tokens made by other wallets. Select one for metadata and market details.</p>
+      <div class="field"><label>Search assets</label><input id="token-search" type="text" placeholder="Name, symbol, or MNT address" autocomplete="off" /></div>
+      <div id="token-discovery-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
+    </div>
+    <div class="card" id="token-market-detail">
+      <div class="empty">Select a token to view its details and exchange market.</div>
+    </div>
+  </div>
+
+  <div id="token-pane-wallet" class="token-pane active">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Tokens in This Wallet</div>
+        <button class="btn btn-ghost btn-sm" id="btn-refresh-tokens">Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Tokens appear here whenever this wallet has a confirmed balance. You do not need to be the creator or DAD authority.</p>
+      <div id="token-list" class="token-list"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="token-pane-swap" class="token-pane">
+      <div class="card" style="max-width:620px">
+        <div class="card-title">Swap Tokens</div>
+        <div id="swap-alert"></div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Atomically swap one token for another, routed through both tokens' HLX pools. The quote already includes both 0.3% pool fees, and a 1% slippage guard is applied to protect the trade.</p>
+        <div id="swap-empty" class="empty" hidden>You need a confirmed balance in a token that has an active HLX pool to swap.</div>
+        <div id="swap-body">
+          <div class="field"><label>From (a token you hold)</label><select id="swap-source"></select></div>
+          <div class="field"><label>Amount</label><input id="swap-amount" inputmode="decimal" placeholder="0" /></div>
+          <div class="field"><label>To (receive)</label><select id="swap-target"></select></div>
+          <div id="swap-quote" class="token-address">Enter an amount for a routed quote.</div>
+          <button class="btn btn-primary btn-full mt8" id="btn-swap-tokens">Swap</button>
+        </div>
+      </div>
+  </div>
+
+  <div id="token-pane-create" class="token-pane">
+      <div class="card" style="max-width:620px">
+        <div class="card-title">Create a Token</div>
+        <div id="token-create-alert"></div>
+        <div class="field"><label>Metadata JSON URL</label><input id="token-uri" type="url" maxlength="1024" placeholder="https://gateway.example/ipfs/METADATA_CID" /></div>
+        <button class="btn btn-ghost btn-sm" id="btn-token-load-metadata" type="button">Load metadata</button>
+        <div id="token-metadata-preview" class="empty" style="margin:12px 0">Load a JSON document containing name, symbol, description, and image.</div>
+        <div class="field"><label>Decimals (0&ndash;9)</label><input id="token-decimals" type="number" min="0" max="9" value="0" /></div>
+        <div class="field"><label>DAD management authority</label><input id="token-dad-address" maxlength="40" placeholder="Defaults to your wallet address" /></div>
+        <button class="btn btn-primary btn-full mt8" id="btn-token-create">Create Token</button>
+        <p style="font-size:12px;color:var(--muted);margin-top:10px">Like a Solana mint, a new MNT starts with zero supply. Its DAD authority can mint afterward.</p>
+      </div>
+  </div>
+
+  <div id="token-pane-manage" class="token-pane">
+      <div class="card" style="max-width:720px">
+        <div class="card-title">Token Management</div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Transfer tokens held by this wallet, or mint and manage authority for tokens whose DAD is this wallet.</p>
+        <div id="token-action-alert"></div>
+        <div class="field"><label>Token</label><select id="token-select"><option value="">No manageable tokens</option></select></div>
+        <div id="token-selected-info" class="empty">Select a confirmed token.</div>
+        <div class="field"><label>Recipient address</label><input id="token-recipient" maxlength="40" placeholder="40-character address" /></div>
+        <div class="field"><label>Amount</label><input id="token-amount" inputmode="decimal" placeholder="0" /></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" style="flex:1" id="btn-token-transfer">Transfer</button>
+          <button class="btn btn-success" style="flex:1" id="btn-token-mint">Mint</button>
+          <button class="btn btn-danger" style="flex:1" id="btn-token-burn">Burn</button>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:6px" id="token-burn-note" hidden>Burn permanently destroys tokens from your DAD balance, lowering the total minted supply. It uses the Amount field above.</p>
+        <div id="token-authority-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="field"><label>New DAD authority address</label><input id="token-new-dad" maxlength="40" placeholder="40-character address" /></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost" style="flex:1" id="btn-token-set-dad">Transfer DAD</button>
+            <button class="btn btn-ghost" style="flex:1;color:var(--red)" id="btn-token-revoke-dad">Revoke DAD</button>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:8px">Revoking DAD is permanent and makes the supply fixed.</p>
+        </div>
+        <div id="token-pool-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="card-title" style="margin-bottom:12px">Create Exchange Pool</div>
+          <div id="token-pool-alert"></div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Enter only the HLX liquidity. Helix automatically places this DAD wallet's entire confirmed coin balance into the pool, giving every pooled token an equal share of the opening HLX value. Initial liquidity is permanent and the pool charges 0.3% per trade.</p>
+          <div class="field"><label>HLX liquidity (whole HLX)</label><input id="token-pool-hlx-amount" type="number" min="1" step="1" placeholder="0" /></div>
+          <button class="btn btn-success btn-full" id="btn-token-create-pool">Create Exchange Pool</button>
+        </div>
+        <div id="token-pool-add-controls" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="card-title" style="margin-bottom:12px">Add HLX Liquidity</div>
+          <div id="token-pool-add-alert"></div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Move additional HLX into this coin's pool. This is permanent, increases displayed liquidity, and raises the reserve price because no tokens are removed.</p>
+          <div class="field"><label>Additional HLX</label><input id="token-pool-add-hlx-amount" type="number" min="1" step="1" placeholder="0" /></div>
+          <button class="btn btn-success btn-full" id="btn-token-add-pool-liquidity">Add HLX Liquidity</button>
+        </div>
+      </div>
+  </div>
+</div>
+
+<!-- HISTORY -->
+<div id="panel-history" class="panel">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <div class="card-title" style="margin-bottom:0">Transaction History</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-history">↻ Refresh</button>
+    </div>
+    <div id="history-list"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ACTIVITY -->
+<div id="panel-activity" class="panel">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:0">Blockchain Activity</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-activity">Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">All confirmed transactions from every wallet, newest first. Select a transaction to view its block, signature, addresses, and token details.</p>
+    <div id="activity-list"><div class="empty">Loading&hellip;</div></div>
+    <nav id="activity-pagination" class="pagination" aria-label="Blockchain activity pages"></nav>
+  </div>
+</div>
+
+<!-- LEADERBOARD -->
+<div id="panel-leaderboard" class="panel">
+  <div class="card">
+    <div class="leaderboard-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <div class="card-title" style="margin-bottom:0">Wallet Worth Leaderboard</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-leaderboard" type="button">Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Public confirmed addresses ranked by HLX balance plus token holdings at their current on-chain HLX pool spot price. NFTs and tokens without active liquidity are excluded. Values are estimates and pool prices can be manipulated.</p>
+    <div id="leaderboard-list"><div class="empty">Loading&hellip;</div></div>
+    <nav id="leaderboard-pagination" class="pagination" aria-label="Wallet leaderboard pages"></nav>
+  </div>
+  <div class="card" id="leaderboard-detail" hidden>
+    <div class="leaderboard-detail-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <div>
+        <div class="card-title" style="margin-bottom:4px">Wallet Worth History</div>
+        <div class="token-address" id="leaderboard-detail-address"></div>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="btn-close-leaderboard-detail" type="button">Close</button>
+    </div>
+    <div id="leaderboard-detail-summary" class="detail-grid" style="margin-bottom:14px"></div>
+    <div id="leaderboard-worth-chart" class="price-chart"><div class="empty">Select a wallet to view its chart.</div></div>
+    <div class="alert alert-info mt8">Candles show estimated confirmed wallet worth, not a guaranteed sale value. Large token positions may receive substantially less HLX when sold because of price impact.</div>
+  </div>
+</div>
+
+<!-- POOLS -->
+<div id="panel-pools" class="panel">
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+      <div class="card-title" style="margin-bottom:0">Mining Pools</div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh-pools">↻ Refresh</button>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">A shared directory of Helix mining pools. Listing a pool here shares it with every node on the network. Each pool's fee, active miners, and status are read live from the pool. Join one from the Helix Miner app by choosing Pool mode and pasting the pool URL.</p>
+    <div id="pools-alert"></div>
+    <div class="field" style="margin-bottom:0">
+      <label>List a pool (its public URL, e.g. https://your-pool.trycloudflare.com)</label>
+      <div class="addr-row">
+        <input id="pool-url" type="text" placeholder="https://…" autocomplete="off" style="flex:1" />
+        <button class="btn btn-primary" id="btn-add-pool" type="button">List Pool</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Available Pools</div>
+    <div id="pool-list"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+
+<!-- DOCS -->
+<div id="panel-nft" class="panel">
+  <div class="token-tabs" role="tablist" aria-label="NFT sections">
+    <button class="nft-tab active" type="button" role="tab" aria-selected="true" aria-controls="nft-pane-wallet" data-nft-pane="wallet">My NFTs</button>
+    <button class="nft-tab" type="button" role="tab" aria-selected="false" aria-controls="nft-pane-manage" tabindex="-1" data-nft-pane="manage">Manage NFTs</button>
+    <button class="nft-tab" type="button" role="tab" aria-selected="false" aria-controls="nft-pane-discover" tabindex="-1" data-nft-pane="discover">Discover</button>
+    <button class="nft-tab" type="button" role="tab" aria-selected="false" aria-controls="nft-pane-create" tabindex="-1" data-nft-pane="create">Create NFT</button>
+  </div>
+
+  <div id="nft-pane-wallet" class="nft-pane active" role="tabpanel">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">My NFTs</div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-refresh" type="button">↻ Refresh</button>
+      </div>
+      <div id="nft-gallery"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="nft-pane-manage" class="nft-pane" role="tabpanel" hidden>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Manage NFTs</div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-manage-refresh" type="button">&#8635; Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">A creator can change an NFT's royalty only while they still own it and before its first transfer or sale. Once ownership leaves the creator, the royalty is permanently locked.</p>
+      <div id="nft-manage-gallery"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="nft-pane-discover" class="nft-pane" role="tabpanel" hidden>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Discover NFTs</div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-discover-refresh" type="button">↻ Refresh</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Browse every confirmed NFT on Helix, including NFTs created and owned by other wallets. Bids lock real HLX until they are cancelled, refunded, or accepted.</p>
+      <div class="field"><label>Search NFTs</label><input id="nft-search" type="text" placeholder="Name, description, NFT ID, creator, or owner" autocomplete="off" /></div>
+      <div id="nft-discovery-gallery"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+  <div id="nft-pane-create" class="nft-pane" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card-title">Create an NFT</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Mint a unique, one-of-a-kind NFT that you own on-chain. The image is hosted at an HTTPS URL; its details (and a content hash) are recorded on the blockchain.</p>
+      <div id="nft-create-alert"></div>
+      <div class="field"><label>Name</label><input id="nft-name" maxlength="64" placeholder="My artwork" autocomplete="off" /></div>
+      <div class="field"><label>Description</label><textarea id="nft-description" maxlength="1000" placeholder="What is this NFT?"></textarea></div>
+      <div class="field"><label>Image URL (HTTPS)</label><input id="nft-image" placeholder="https://…/image.png" autocomplete="off" /></div>
+      <div class="field"><label>Creator royalty % (0–100, optional)</label><input id="nft-royalty" inputmode="decimal" placeholder="0" /></div>
+      <div class="field">
+        <label>Traits (optional)</label>
+        <div id="nft-attrs"></div>
+        <button class="btn btn-ghost btn-sm" id="btn-nft-add-attr" type="button" style="margin-top:6px">+ Add trait</button>
+      </div>
+      <button class="btn btn-primary btn-full" id="btn-nft-create" type="button">Create NFT</button>
+    </div>
+  </div>
+</div>
+
+<div id="panel-explorer" class="panel">
+  <div class="card">
+    <div class="card-title">Block Explorer</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Look up a block by height or hash, a transaction by its ID, or an address.</p>
+    <div style="display:flex;gap:8px">
+      <input id="explorer-query" type="text" placeholder="Block height, block hash, transaction ID, or address" style="flex:1" />
+      <button class="btn btn-primary" id="btn-explorer-search">Search</button>
+    </div>
+    <div id="explorer-alert" style="margin-top:10px"></div>
+  </div>
+  <div id="explorer-results"></div>
+</div>
+
+<div id="panel-docs" class="panel">
+  <div class="card docs-hero">
+    <div>
+      <div class="card-title">Helix Documentation</div>
+      <h2>Use the wallet, mine blocks, or join the network.</h2>
+      <p>Helix is an educational proof-of-work network. Start with the wallet guide, or download the software needed to mine, host a pool, or run a full node.</p>
+    </div>
+    <div class="docs-downloads">
+      <a class="btn btn-primary" href="/downloads/helix-miner.zip" download>Download Helix Miner</a>
+      <a class="btn btn-success" href="/downloads/helix-node.zip" download>Download Helix Node</a>
+      <a class="btn btn-ghost" href="/downloads/helix-pool.zip" download>Download Helix Pool</a>
+    </div>
+  </div>
+
+  <div class="docs-grid">
+    <section class="card docs-section">
+      <div class="card-title">How the blockchain works</div>
+      <p><strong>Blocks and the chain.</strong> The chain starts with a fixed, empty genesis block. Every block after it holds a list of transactions plus exactly one mining reward, is identified by its SHA-256 hash, and points back to its parent by that parent's hash. Change anything in a block and its hash changes, which breaks every block after it — that is what makes the history tamper-evident.</p>
+      <p><strong>Proof of work and difficulty.</strong> A block is only valid if its hash, read as a number, is less than or equal to the current <strong>target</strong>: <code>int(hash, 16) &le; target</code>. Miners repeatedly change a nonce until the hash falls under the target. A smaller target is harder to hit. Helix uses a fine-grained target, so difficulty is continuous rather than jumping in 16&times; steps: <code>difficulty = 64 &minus; log16(target + 1)</code>, and it can be fractional. The chain seeds at difficulty <strong>5.5</strong> from block&nbsp;1 and retargets every <strong>100 blocks</strong> toward a <strong>10-minute</strong> average block time (the first retarget is at block&nbsp;101). The size of each adjustment scales with how far the recent average was from target — a run of very fast blocks hardens far more than blocks that were only slightly quick — bounded to a large-but-finite move per window, with no upper cap and a floor at the minimum difficulty.</p>
+      <p><strong>Transactions.</strong> Transactions are signed with secp256k1 keys that live only in your browser (the network is non-custodial — no server holds your keys). Besides a plain HLX transfer, transactions can create a token, mint, transfer, change a token's DAD authority, create a liquidity pool, add HLX liquidity, buy, sell, swap, or burn, and can mint, transfer, list, bid on, or purchase a one-of-a-kind NFT. A submitted transaction sits in the mempool as <strong>pending</strong> until a miner includes it in a block.</p>
+      <p><strong>Mining and rewards.</strong> Mining happens on the miner's own hardware, not the node: a miner pulls a work template (<code>/mining/work</code>), hashes it locally on CPU, GPU, or through a pool, and submits the solved block (<code>/mining/submit</code>). Each valid block pays its miner a single <code>SYSTEM</code> reward transaction — this is the <em>only</em> way new HLX is created, and never beyond the fixed maximum supply.</p>
+      <p><strong>Which chain is real (consensus).</strong> Nodes always follow the chain with the most <strong>accumulated proof-of-work</strong> (<code>chain_work</code>), not merely the longest. If two miners find a block at the same height at once, the network briefly splits and each node keeps the block it saw first. Nothing settles until the next block is mined: whichever branch it extends gains more work, and every node reorganizes onto that heavier branch. The abandoned block becomes an <strong>orphan</strong> — its ordinary transactions go back to the mempool to be mined again, and its reward is discarded, so only the winning miner is paid. Configured <strong>checkpoints</strong> stop any reorg from rewriting history past a fixed point.</p>
+      <p><strong>Networking.</strong> Nodes talk over plain HTTP. A new node joins by contacting a bootstrap <strong>seed</strong>, then learns about everyone else through peer gossip. Every 30 seconds each node discovers peers, pulls the heaviest chain it can find, and re-audits every block's hash.</p>
+      <p><strong>Tokens and swaps.</strong> Custom tokens trade against HLX through constant-product liquidity pools with a 0.3% fee. HLX is the base asset and the stable unit of account the wallet prices everything in.</p>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Wallet basics</div>
+      <ol>
+        <li>Create a wallet, choose a unique local name and password, and save the 12-word recovery phrase offline.</li>
+        <li>Use <strong>Send</strong> to choose HLX or a held custom token, enter the recipient address and amount, then submit the signed transaction.</li>
+        <li>A submitted transaction stays pending until a miner confirms it. Its sender may cancel it from Send while it is still pending.</li>
+        <li><strong>History</strong> shows this wallet's transactions. <strong>Activity</strong> shows confirmed transactions from every wallet, newest first.</li>
+        <li><strong>Confirmations.</strong> Once a transaction is mined, the wallet shows how many blocks have been built on top of it — its confirmation depth. More confirmations mean the transaction is buried deeper and harder to reverse; a payment is treated as final after enough blocks follow it.</li>
+        <li><strong>Get paid with a QR code or link.</strong> Your <strong>Receive</strong> view shows a QR code of your address, and you can attach an amount to generate a <strong>payment-request</strong> QR and a shareable link. Whoever opens the link or scans the code lands in Send with the recipient and amount already filled in.</li>
+        <li><strong>Scan to send.</strong> On the <strong>Send</strong> screen, tap <strong>📷 Scan a QR code</strong> to read a plain address or a payment-request code with your camera and auto-fill the recipient (and amount). Camera access needs HTTPS or localhost.</li>
+        <li><strong>Address book.</strong> Save the people you pay as named contacts and pick them from a dropdown on Send instead of pasting a 40-character address each time.</li>
+        <li><strong>Desktop notifications.</strong> Opt in and the wallet notifies you when one of your pending transactions confirms, so you don't have to watch the History list.</li>
+        <li><strong>Install it as an app.</strong> Helix is a progressive web app — install it from your browser (desktop or mobile) for a full-screen, offline-capable wallet that launches from your home screen or dock.</li>
+        <li><strong>Explorer.</strong> The Explorer tab lets you browse blocks and look up any transaction or address on the chain, and the Nodes tab charts network difficulty over time.</li>
+        <li><strong>Backup &amp; Restore:</strong> from the Dashboard you can download an encrypted backup file of your wallet, and restore it later from the <strong>Recover</strong> screen. Your seed phrase or a backup file is the only way to regain access on another device or browser.</li>
+      </ol>
+      <div class="alert alert-warn">Never share a recovery phrase, private key, wallet password, wallet backup file, or node admin API key.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Tokens and markets</div>
+      <ol>
+        <li>The <strong>Dashboard</strong> shows your total wallet value priced in HLX (your HLX plus every held token converted through its pool price), since HLX is the stable unit of account. Token lists — on the Dashboard, in <strong>My Tokens</strong>, and in <strong>Discover</strong> — show one asset per line, and the HLX row shows exactly how much HLX you hold.</li>
+        <li>Open <strong>Tokens &gt; Create Token</strong> and provide an HTTPS metadata JSON URL with name, symbol, description, and image fields.</li>
+        <li>The MNT address identifies the token. The DAD address is the authority allowed to mint more supply, burn supply, transfer authority, or revoke it permanently.</li>
+        <li>After creation is mined, use <strong>Management</strong> to mint supply, transfer, or <strong>Burn</strong>. Only the DAD authority can mint or burn; burning permanently destroys tokens from the DAD's balance and lowers the total minted supply.</li>
+        <li><strong>Discover</strong> lists HLX and every confirmed token. A DAD can create a market by locking HLX plus its entire confirmed token balance; anyone can then buy or sell through the pool.</li>
+        <li>The dedicated <strong>Swap</strong> tab atomically trades one token for another, routed through both tokens' HLX pools. Quotes include both 0.3% pool fees, and a 1% slippage guard protects each trade.</li>
+        <li>Token price uses OHLC candlesticks. Choose the candle interval — <strong>Minute, Hour, Day, Month, or Auto</strong> — and set exactly when the chart starts with the <strong>Start</strong> date-and-time picker. <strong>Fit all</strong> zooms out so every candle is visible in the view at once. Cropping the start rescales the vertical axis so small values stay readable next to large ones. Drag to pan, scroll to zoom, drag the corner to resize, and double-click to reset. Rising candles are green and falling candles are red.</li>
+      </ol>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">NFTs</div>
+      <p>An <strong>NFT</strong> (non-fungible token) is a one-of-a-kind item recorded on the chain. Unlike HLX or a custom token — where every unit is interchangeable and you hold a <em>balance</em> — each NFT has a unique id and a single explicit <strong>owner</strong>, so ownership can be proven and handed to someone else but never split or duplicated.</p>
+      <ol>
+        <li><strong>Create one.</strong> Open the <strong>NFTs</strong> tab and fill in a name, description, and an <strong>HTTPS image URL</strong>. Optionally add <strong>traits</strong> (trait/value pairs such as Color / Blue) and a <strong>creator royalty</strong> percentage. Submitting mints the NFT to you; it confirms once a block is mined.</li>
+        <li><strong>What's stored on-chain.</strong> The name, description, image link, and traits are recorded, and a SHA-256 <strong>content hash</strong> of that metadata is signed into the mint — so anyone can verify the details were never altered after minting. The image file itself lives at the URL you provide, not in the block.</li>
+        <li><strong>My NFTs.</strong> The tab shows a gallery of every NFT you currently own, each with its image, traits, id, royalty, and a <strong>Transfer</strong> button.</li>
+        <li><strong>Discover and value.</strong> Discover shows every confirmed NFT, including other wallets' NFTs. Market value uses the last confirmed sale when one exists, otherwise the highest escrow-backed bid. A listing without a sale is clearly labeled as an asking price.</li>
+        <li><strong>Sale chart.</strong> Choose <strong>Details &amp; price chart</strong> on any NFT to view its confirmed sale prices as OHLC candlesticks. The interval, start time, pan, wheel zoom, height, and width controls work the same way as the token chart.</li>
+        <li><strong>Listings and purchases.</strong> An owner can list an NFT for a whole-HLX price, then edit or cancel that listing from <strong>Manage NFTs</strong>. Editing its price preserves its bids. A buyer can purchase it atomically: consensus deducts the buyer's HLX, pays the seller and creator royalty, and transfers ownership in one confirmed transaction.</li>
+        <li><strong>Bids.</strong> A bid locks real HLX in blockchain escrow, so a wallet cannot make an unfunded bid or spend that HLX elsewhere. Bidders can raise or cancel their own bid. Manage NFTs shows the owner every bid from highest to lowest and lets them accept a selected bid; losing bids are refunded when the NFT sells, transfers, or is delisted.</li>
+        <li><strong>Transfer.</strong> Only the current owner can move an NFT. A transfer is a straight handoff of ownership to another address for no HLX — the chain simply records the new owner. Forged ids, tampered metadata, and transferring an NFT you don't own are all rejected by every node.</li>
+        <li><strong>Royalties.</strong> The creator can update the royalty only while they still own the NFT and before its first transfer or sale. The first ownership change locks it permanently, even if it later returns to the creator. The royalty is automatically paid from each confirmed marketplace sale; if the creator is also the seller, they receive the full sale amount.</li>
+      </ol>
+      <div class="alert alert-info">NFT marketplace and royalty-management actions are signed consensus transactions under peer protocol 14. Private keys remain in the browser, and every node verifies the signature, ownership, escrow balance, price, royalty settlement, and network fee. Upgrade every node before confirming marketplace transactions.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Run a full node</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px"><strong>Easiest:</strong> install Python 3.11+, extract <code>helix-node.zip</code>, and double-click <strong><code>setup.bat</code></strong> (Windows) to open the installer — a small window where you fill in the settings (most are optional), and it creates the environment, checks and installs any missing libraries, and starts the node for you. Prefer no menu? Double-click <strong><code>start-node.bat</code></strong> (Windows) or run <code>bash start-node.sh</code> (Linux/macOS) to do the same from the command line.</p>
+      <div style="font-weight:600;margin:6px 0 6px">Manual setup</div>
+      <ol>
+        <li>Install Python 3.11+ and extract <code>helix-node.zip</code>.</li>
+        <li>Create a virtual environment. Windows: <code>python -m venv .venv</code> then <code>.venv\Scripts\activate.bat</code>. Linux/macOS: <code>python3 -m venv .venv</code> then <code>source .venv/bin/activate</code>.</li>
+        <li>Install dependencies: <code>pip install -r requirements.txt</code>.</li>
+        <li>Start the node: <code>python run_node.py</code>.</li>
+        <li>Confirm <code>http://127.0.0.1:8000/health</code> returns node JSON. That address also serves this wallet UI locally — so you do <em>not</em> need to host a website to use your node. Add peers from the Nodes tab or <code>config.json</code>.</li>
+      </ol>
+      <div class="alert alert-info">An admin API key is <strong>optional</strong> — running a node needs no key. It only protects administrative endpoints (mine, sync, discovery) and is not part of consensus, so nodes with different keys (or no key) still share chain data. For a public node you can turn it on by setting <code>HELIX_ADMIN_API_KEY</code> and <code>HELIX_REQUIRE_ADMIN_API_KEY=true</code>; a node and the Pages site in front of it must then share the same key.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Expose and connect a node</div>
+      <ol>
+        <li>With the node running, start a tunnel: <code>cloudflared tunnel --url http://localhost:8000</code>. A quick tunnel needs no domain, but its <code>https://xxxx.trycloudflare.com</code> address changes every time it restarts.</li>
+        <li>Verify the tunnel: open <code>https://YOUR-URL.trycloudflare.com/health</code> and confirm it returns node JSON. Optionally, submit your node URL from the wallet's <strong>Nodes</strong> tab ("Submit your node for the shared list") to have it considered for the shared node list.</li>
+        <li>Hosting this website is <strong>optional</strong> — the node already serves the wallet locally. To put it online: in Cloudflare Pages &rarr; your project &rarr; <strong>Settings &rarr; Variables and secrets</strong> (Production scope), set <code>HELIX_NODE_URL</code> = the current tunnel URL (no trailing slash, no <code>/api</code>; multiple nodes use a JSON array for automatic failover). Only if your node <em>requires</em> an admin key, also set <code>HELIX_ADMIN_API_KEY</code> to the same value (choose Encrypt) and <code>HELIX_ENABLE_ADMIN_API</code> = <code>true</code> to allow admin actions through the site.</li>
+        <li><strong>Deploy to the production branch.</strong> Pages bakes variables into a deployment, and a deploy tagged with a non-production branch only creates a preview (<code>&lt;branch&gt;.helixwallet.pages.dev</code>) — the live site will not change. Deploy with the production branch named explicitly: <code>wrangler pages deploy web --project-name=helixwallet --branch=main</code>. Use whatever <strong>Settings &rarr; Builds &amp; deployments &rarr; Production branch</strong> shows for <code>--branch</code>.</li>
+        <li>Open <code>https://helixwallet.pages.dev/api/health</code>. It should return the same node JSON, and the wallet will connect on reload.</li>
+      </ol>
+      <div class="alert alert-warn">Quick-tunnel URLs rotate and Pages snapshots variables at deploy time, so after every tunnel restart you must update <code>HELIX_NODE_URL</code> <em>and</em> redeploy to production. If <code>/api/*</code> returns Cloudflare <strong>Error 1016</strong>, the live production deployment is still pointing at an old, dead tunnel — update the variable and redeploy to the production branch.</div>
+      <div class="alert alert-info">For a stable setup, use a <strong>named Cloudflare Tunnel</strong> on a domain in your Cloudflare account: it gives a fixed hostname the Worker can always reach and removes the per-restart update. For a permanent public node, also add TLS, firewall rules, backups, rate limits, and trusted peers.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Run a permanent node for free</div>
+      <p>A "permanent" node needs two things: a <strong>stable public address</strong> and a <strong>machine that stays on</strong>. You can get both without paying — options below, most robust first. Whichever address you end up with, paste it into the installer's <strong>Public URL</strong> field (or <code>network.public_url</code> in <code>config.json</code>) and the node will advertise it and register with the seed automatically.</p>
+      <ul>
+        <li><strong>Oracle Cloud "Always Free" VM</strong> — a genuinely free-forever cloud server (generous ARM allowance) with a <strong>permanent public IP</strong>. Run the node there so it's always on <em>and</em> always reachable — no home PC required. Point a DNS name at the IP, or run <code>cloudflared</code> on the VM for HTTPS. This is the closest thing to a real permanent node without paying.</li>
+        <li><strong>Tailscale Funnel</strong> — free, gives your machine a stable HTTPS hostname like <code>mynode.tailnet.ts.net</code> with <strong>no domain and no port forwarding</strong>. Works behind CGNAT. Run the Tailscale agent next to the node and expose port 8000; your home machine just has to stay on.</li>
+        <li><strong>ngrok free static domain</strong> — the free plan includes one fixed <code>*.ngrok-free.app</code> subdomain that doesn't rotate like the quick tunnel. Fine for node-to-node traffic; watch the free bandwidth limits.</li>
+        <li><strong>playit.gg / Pinggy</strong> — free tunnels that also work behind CGNAT, good fallbacks (some free URLs rotate — check before relying on them).</li>
+        <li><strong>Home port-forward + free dynamic DNS (DuckDNS)</strong> — forward port 8000 and point a free <code>you.duckdns.org</code> name at it. Free and permanent-ish, but only works if your ISP gives you a real public IP (not CGNAT), and it exposes your home IP (HTTP unless you add a proxy).</li>
+      </ul>
+      <div class="alert alert-info">The honest catch on every home option: your computer must stay powered on for the node to be reachable, so an always-free cloud VM is the only way to get "permanent" without paying <em>or</em> leaving a PC running 24/7. Everyone else can keep using the free quick tunnel — it just rotates its URL on each restart. The shipped seed <code>node.hlxchain.com</code> handles bootstrap either way.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Mine with Helix Miner</div>
+      <ol>
+        <li>Extract <code>helix-miner.zip</code>, install Python 3.11+, then run <code>python -m pip install -r requirements.txt</code>.</li>
+        <li>Start it with <code>python helix_miner.py</code>.</li>
+        <li>Enter the 40-character reward wallet address and one or more reachable node URLs. The miner needs no admin API key. It checks for competing blocks about once per second and logs each round's elapsed time.</li>
+        <li>For NVIDIA CUDA 13, install <code>python -m pip install -r requirements-nvidia.txt</code>, then select <strong>NVIDIA CUDA</strong>. CUDA 12 users should install <code>cupy-cuda12x[ctk]</code> instead.</li>
+        <li>Choose the CPU worker count or NVIDIA device and start mining. The first valid submitted proof wins the block and the protocol pays the current reward.</li>
+      </ol>
+      <div class="card-title" style="margin:16px 0 8px">Supported GPUs</div>
+      <ul>
+        <li>NVIDIA CUDA-capable GPUs with compute capability 3.0 or newer, provided the installed NVIDIA driver and selected CUDA runtime still support that card.</li>
+        <li>Modern GeForce RTX, NVIDIA RTX/Quadro, Tesla, and data-center GPUs are typical compatible families. Your RTX 4050 has been hardware-tested with Helix.</li>
+        <li>CUDA 13 uses <code>cupy-cuda13x[ctk]</code>; CUDA 12 uses <code>cupy-cuda12x[ctk]</code>. Run <code>nvidia-smi</code> to see the driver-reported CUDA version.</li>
+        <li>Windows and Linux are supported by the official CuPy wheels. The current miner uses the first NVIDIA GPU and does not combine multiple GPUs.</li>
+        <li>AMD, Intel, Apple Silicon, and other non-CUDA GPUs are not supported. CPU mode remains available on those systems.</li>
+      </ul>
+      <p>Difficulty is seeded at 5.5 from block 1 and retargets every 100 blocks toward a 10-minute average block time (first retarget at block 101). A solution may take more or less than the target because proof-of-work is probabilistic.</p>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Mining pools</div>
+      <p>A pool lets several miners combine hashrate and share block rewards, so payouts arrive more steadily than solo mining. Anyone can host one, and the wallet's <strong>Pools</strong> tab is a shared directory — list your pool there and it propagates to every node, showing each pool's fee, active miners, and online status. The pool operator keeps the fee (<code>HELIX_POOL_FEE_PERCENT</code>) from each block; note payouts are whole HLX, so a 1% fee on a 10 HLX reward rounds to 0 — raise the percentage for a reliable cut.</p>
+      <div class="card-title" style="margin:14px 0 8px">Host a pool</div>
+      <ol>
+        <li>Download <strong>Helix Pool</strong>. On Windows, double-click <code>setup-pool.bat</code>; on Linux/macOS, run <code>bash start-pool.sh</code>. The Python GUI installs dependencies and keeps its status and logs scrollable.</li>
+        <li>Enter a dedicated payout wallet's 12-word seed, node URL(s), pool port, fee, and share difficulty. Select <strong>Helix website wallet</strong> for a wallet made on this site or <strong>Python/CLI BIP-39 wallet</strong> for one made with the Python tools; the two formats derive different addresses. The seed stays in memory and is never saved.</li>
+        <li>For a named Cloudflare tunnel, paste its token into the masked input and configure its public hostname service as <code>http://localhost:8100</code>. Or leave the token blank and select the temporary tunnel option for a changing <code>trycloudflare.com</code> URL. Tunnel tokens are not stored or logged.</li>
+        <li>Start the pool and give miners its public base URL. The GUI shows live shares, estimated hashrate, connected miners, blocks found, and payouts. Manual environment-variable setup remains documented in the included README.</li>
+      </ol>
+      <div class="card-title" style="margin:14px 0 8px">Join a pool</div>
+      <ol>
+        <li>Open Helix Miner and set <strong>Mining mode</strong> to <strong>Pool</strong>.</li>
+        <li>Enter the <strong>Pool URL</strong> and your 40-character reward address, choose CPU or NVIDIA, and Start.</li>
+        <li>You submit shares at a difficulty that automatically adjusts toward a steady rate. When any member solves a block, the reward is split by each miner's <strong>weighted work in the rolling PPLNS window</strong> (minus the pool fee) and paid automatically. Recent sustained hashrate earns more of the payout and discourages pool hopping. Payouts are signed on-chain transactions and confirm once a block is mined.</li>
+      </ol>
+      <div class="alert alert-info">The pool's admin/payout wallet is only on the host's machine. Miners never share keys — they only submit shares and receive payouts to their own address.</div>
+    </section>
+
+    <section class="card docs-section">
+      <div class="card-title">Network rules and maintenance</div>
+      <ul>
+        <li><strong>Block-1 relaunch.</strong> This chain was relaunched with a fresh genesis and every rule active from block&nbsp;1 — there are no phase-in heights. Applying this ruleset requires a fresh chain; every node must reset and run the same build.</li>
+        <li>Reward: a flat <strong>10 HLX per block from block&nbsp;1</strong>, up to the maximum supply. (There is no longer a 10&rarr;2&rarr;10 schedule.)</li>
+        <li>Difficulty: proof of work uses a Bitcoin-style numeric target (valid when <code>int(hash, 16) &le; target</code>) active from block&nbsp;1, seeded at difficulty <strong>5.5</strong>, retargeting smoothly by the ratio of actual to expected block time toward a <strong>10-minute</strong> average — bounded per window, floored at the minimum difficulty with no upper cap. Miners and pools read the exact <code>target</code> from <code>/mining/work</code>.</li>
+        <li>Difficulty retarget interval: <strong>every 100 blocks from block&nbsp;1</strong> (<code>difficulty_adjustment_interval</code> = 100); the first retarget is at block&nbsp;101. There is no reset height.</li>
+        <li>Maximum native supply: 20,000,000 HLX.</li>
+        <li>Tokens, liquidity pools, and atomic token-to-token swaps are all active from block&nbsp;1. Token-to-token trades route through both HLX pools.</li>
+        <li>The DAD token-burn feature requires every node to run the updated build; nodes on older code reject <code>token_burn</code> transactions, so upgrade all nodes together before relying on it.</li>
+        <li>Protocol 12 adds a signed 1 HLX minimum fee to new transfers, token actions, and NFT actions. The confirming miner receives every fee in its block on top of the mining subsidy; fees do not create new supply. Fee-less legacy transactions become invalid at block 200.</li>
+        <li>Block timestamps must not run backward past their parent by more than a small tolerance (and still may not be far in the future). This lets fast, low-difficulty blocks that share a clock tick — or miners that stamp whole seconds — be accepted instead of wrongly rejected as "another miner won." It is a consensus rule, so update every node together.</li>
+        <li>Auto-checkpoints: the node periodically records a checkpoint at a safely buried height so deep history can't be reorganized, hardening the chain against long-range rewrites without manual configuration.</li>
+        <li>From block 1, <code>9d7c721b209cee99a8158c524fa433ead9236781</code> is the native HLX DAD governance identity. It cannot mint; all new HLX remains mining-only.</li>
+        <li>Before upgrading or copying chain data, stop the node and back up its database.</li>
+        <li>Use <code>python helixctl.py validate</code> to verify the local chain.</li>
+      </ul>
+      <div class="alert alert-info">Helix has not received a professional security audit and should not be treated as production financial infrastructure.</div>
+    </section>
+  </div>
+</div>
+
+<!-- NODES -->
+<div id="panel-nodes" class="panel">
+  <div class="card">
+    <div class="card-title">Network Difficulty</div>
+    <div id="net-chart"><div class="empty">Loading&hellip;</div></div>
+  </div>
+  <div class="nodes-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div class="card">
+      <div class="card-title">Connected Peers</div>
+      <div id="nodes-alert"></div>
+      <div id="node-self" style="font-size:12px;color:var(--muted);margin-bottom:12px;font-family:monospace"></div>
+      <div id="peer-list" style="margin-bottom:12px"><div class="empty" style="padding:16px">No peers yet</div></div>
+      <div class="field" style="margin-bottom:8px">
+        <label>Add peer manually</label>
+        <div class="peer-add-row" style="display:flex;gap:8px">
+          <input id="peer-url" type="text" placeholder="http://host:port" style="flex:1" />
+          <button class="btn btn-primary btn-sm" id="btn-add-peer">Add</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Auto-Discovery</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+        Scans your local network for other Helix nodes and registers them automatically.
+        The background worker does this every 30 seconds.
+      </p>
+      <div id="discover-alert"></div>
+      <button class="btn btn-primary btn-full" id="btn-discover">🔍&nbsp; Scan for Nodes Now</button>
+      <div id="discover-results" style="margin-top:14px"></div>
+    </div>
+  </div>
+  <div class="nodes-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div class="card">
+      <div class="card-title">Chain Stats</div>
+      <div id="chain-stats">Loading…</div>
+      <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" id="btn-refresh-nodes">↻ Refresh</button>
+        <button class="btn btn-ghost btn-sm" id="btn-sync-peers">⇄ Pull longest chain</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Background Sync</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+        Every 30 s the node auto-discovers peers, pulls the longest chain, and audits every block's hash.
+      </p>
+      <button class="btn btn-ghost btn-full btn-sm" id="btn-load-cached-audit">↻ Load last background audit</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Submit your node for the shared list</div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Running a public node? Submit its URL to be considered for the shared bootstrap list. Submissions are reviewed by the operator — they are not added or shared automatically.</p>
+    <div id="submit-node-alert"></div>
+    <div class="field">
+      <label>Your node URL (https://…)</label>
+      <input id="submit-node-url" type="text" placeholder="https://your-node.trycloudflare.com" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label>Note (optional — how to reach you, uptime, etc.)</label>
+      <input id="submit-node-note" type="text" maxlength="280" placeholder="Optional" autocomplete="off" />
+    </div>
+    <button class="btn btn-primary" id="btn-submit-node" type="button">Submit Node</button>
+  </div>
+  <div class="card">
+    <div class="node-section-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:0">Chain Integrity Audit</div>
+      <button class="btn btn-primary btn-sm" id="btn-run-audit">Run Full Audit</button>
+    </div>
+    <div id="audit-alert"></div>
+    <div id="audit-results"><div class="empty">Click "Run Full Audit" to verify every block.</div></div>
+  </div>
+</div>
+
+</main>
+</div><!-- #app -->
+<div id="tx-modal" class="modal-backdrop" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tx-modal-title">
+    <div class="modal-head">
+      <h2 id="tx-modal-title">Transaction details</h2>
+      <button type="button" class="btn btn-ghost modal-close" id="btn-close-tx-modal" aria-label="Close transaction details">&times;</button>
+    </div>
+    <div class="modal-body" id="tx-modal-body"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+<div id="nft-modal" class="modal-backdrop" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="nft-modal-title" style="width:min(820px,100%)">
+    <div class="modal-head">
+      <h2 id="nft-modal-title">NFT details</h2>
+      <button type="button" class="btn btn-ghost modal-close" id="btn-close-nft-modal" aria-label="Close NFT details">&times;</button>
+    </div>
+    <div class="modal-body" id="nft-modal-body"><div class="empty">Loading&hellip;</div></div>
+  </div>
+</div>
+<div id="scan-modal" class="modal-backdrop" aria-hidden="true">
+  <div class="modal-card" role="dialog" aria-modal="true" style="width:min(400px,100%)">
+    <div class="modal-head">
+      <h2>Scan a QR code</h2>
+      <button type="button" class="btn btn-ghost modal-close" id="btn-close-scan" aria-label="Close scanner">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Point your camera at a Helix receive or payment QR code.</p>
+      <video id="scan-video" playsinline muted style="width:100%;border-radius:12px;background:#000;aspect-ratio:1/1;object-fit:cover"></video>
+      <div id="scan-alert" style="margin-top:10px"></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<!-- Self-hosted QR generator (no external CDN dependency). -->
+<script src="/qrcode.js?v=1" defer></script>
+<!-- Bump the ?v= version whenever app.js changes so browsers don't serve a stale cached copy. -->
+<script src="/app.js?v=20260741" defer></script>
+<script src="/pwa.js?v=3" defer></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Helix Wallet
+Comment=Open the non-custodial Helix wallet
+Exec=helix-wallet
+Icon=helix-wallet
+Terminal=false
+Categories=Finance;Network;

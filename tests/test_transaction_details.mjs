@@ -20,5 +20,8 @@ assert.match(script, /function renderActivityTransactions\(result\)/);
 assert.match(script, /transactions\/recent\?limit=\$\{ACTIVITY_PAGE_SIZE\}&offset=\$\{offset\}/);
 assert.match(script, /data-activity-page/);
 assert.match(html, /All confirmed transactions from every wallet, newest first/);
+assert.match(script, /function transactionAmountText\(tx, sign = ''\)/);
+assert.match(script, /formatTokenAmount\(tx\.amount, Number\(tx\.decimals \|\| 0\)\)/);
+assert.doesNotMatch(script, /token base units/);
 
 console.log('Transaction details UI contract: OK');

@@ -1,11 +1,38 @@
 # Helix Miner
 
+On Windows, extract this ZIP and run `HelixMiner.exe` for the packaged CPU
+miner. Windows may show SmartScreen because the executable is not code-signed.
+For NVIDIA CUDA mining, use the Python instructions below; the driver-specific
+CuPy/CUDA runtime is too large for a universal Cloudflare Pages download.
+
 Requirements: Python 3.11 or newer and a reachable Helix node.
 
 1. Install dependencies: `python -m pip install -r requirements.txt`
 2. Launch: `python helix_miner.py`
 3. Enter a 40-character Helix reward address and one or more node URLs.
 4. Choose the number of worker processes and start mining.
+
+## Command-line miner
+
+The separate CLI entry point works in Windows, Linux, macOS, SSH sessions, and
+headless servers. It does not need tkinter.
+
+Solo mining:
+
+```sh
+python helix_miner_cli.py --address YOUR_40_CHARACTER_ADDRESS --threads 4
+```
+
+Pool mining:
+
+```sh
+python helix_miner_cli.py --address YOUR_40_CHARACTER_ADDRESS \
+  --pool https://pool.example.com --threads 4
+```
+
+Multiple solo nodes can be supplied as a comma-separated list with `--nodes`.
+Run `python helix_miner_cli.py --help` for every option. Stop cleanly with
+Ctrl+C.
 
 ## NVIDIA CUDA
 
@@ -17,6 +44,7 @@ For a CUDA 12 driver, install `cupy-cuda12x[ctk]` instead. Do not install both
 CuPy variants. Select **NVIDIA CUDA** under Mining device, or launch with
 `python helix_miner.py --backend nvidia`. The GPU searches nonces, and Helix
 rechecks every discovered proof with the CPU consensus hash before submission.
+For the CLI, use `python helix_miner_cli.py ... --backend nvidia`.
 
 ### Supported GPUs
 

@@ -1,13 +1,13 @@
 # Helix Pool
 
 Helix Pool combines miners' hashrate and divides each confirmed block payment
-proportionally to the valid shares submitted during that round.
+using each miner's weighted work in a rolling PPLNS share window.
 
 ## Requirements
 
 - Python 3.11 or newer. On Linux, install the OS `python3-tk` package if the GUI
   is unavailable.
-- A reachable protocol-14 Helix node.
+- A reachable protocol-15 Helix node.
 - A dedicated 12-word Helix wallet seed for receiving block payments and paying
   miners. Back it up securely and keep enough HLX available for payout fees.
 - Optional: `cloudflared` on `PATH` for a public pool URL.
@@ -60,3 +60,6 @@ at `/pool/info`, `/pool/work`, `/pool/submit`, and `/pool/stats`.
 
 Never publish the seed phrase, Cloudflare token, `.venv`, or local settings.
 Pool payouts are whole-HLX transactions and each payout pays the network fee.
+The pool adjusts share difficulty per miner toward one accepted share every 15
+seconds by default. Configure `HELIX_POOL_PPLNS_WINDOW` and
+`HELIX_POOL_SHARE_SECONDS` to change the payout window and vardiff target.

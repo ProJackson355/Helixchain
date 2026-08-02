@@ -1,6 +1,8 @@
 const PUBLIC_ROUTES = [
   ["GET", /^\/(?:chain|pending|nodes|stats|health)$/],
   ["GET", /^\/tokens$/],
+  ["GET", /^\/leaderboard$/],
+  ["GET", /^\/leaderboard\/[0-9a-f]{40}\/history$/],
   ["GET", /^\/nfts$/],
   ["GET", /^\/nft\/[0-9a-f]{40}$/],
   ["GET", /^\/nft\/[0-9a-f]{40}\/market\/history$/],
@@ -16,6 +18,7 @@ const PUBLIC_ROUTES = [
   ["GET", /^\/network\/mint_history$/],
   ["GET", /^\/block\/\d+$/],
   ["GET", /^\/transaction\/[0-9a-f]{64}$/],
+  ["GET", /^\/transaction\/envelope\/[0-9a-f]{40}$/],
   ["GET", /^\/nodes\/audit\/cached$/],
   ["GET", /^\/pools$/],
   ["POST", /^\/transaction$/],
@@ -26,8 +29,7 @@ const PUBLIC_ROUTES = [
 
 const ADMIN_ROUTES = [
   ["GET", /^\/nodes\/(?:discover|audit)$/],
-  ["GET", /^\/mine\/status\/[0-9a-f]{32}$/],
-  ["POST", /^\/(?:mine|mine\/start|nodes\/sync_now|nodes\/register)$/],
+  ["POST", /^\/nodes\/(?:sync_now|register)$/],
 ];
 
 function matches(routes, method, path) {
@@ -204,8 +206,8 @@ export default {
     }
 
     // Choose one known-live node before an administrative operation. The
-    // operation itself is never retried, so an uncertain response cannot run
-    // mining twice. This also avoids dead first entries in a node URL array.
+    // operation itself is never retried. This also avoids dead first entries
+    // in a node URL array.
     let adminTarget = null;
     if (isAdmin) {
       for (let index = 0; index < bases.length; index += 1) {

@@ -17,6 +17,10 @@ venv/
 env/
 .mypy_cache/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+test-results/
 .ruff_cache/
 
 # IDEs / editors
@@ -36,11 +40,15 @@ Thumbs.db
 # Per-node runtime state (generated at run time, not source)
 database_*.json
 database_*.json.*
+database_*.sqlite3
+database_*.sqlite3-*
 node_*.json
 peers.json
 pools.json
 submissions.json
 security_state.json
+pool_gui_settings.json
+.package_build_*/
 backups/
 *.tmp
 
@@ -52,7 +60,11 @@ wallets.json.bak
 # Logs
 *.log
 
-# Note: web/downloads/*.zip (the node/miner packages) are intentionally NOT
+# Release signing secrets (publish only the .pub key)
+release-signing.key
+*.release-signing.key
+
+# Note: web/downloads/*.zip (the node/miner/pool packages) are intentionally NOT
 # ignored, because the site links to them and the tests check they exist.
 # If you would rather build them on release instead of committing binaries,
 # uncomment the next line:

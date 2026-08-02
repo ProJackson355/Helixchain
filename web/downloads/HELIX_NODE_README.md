@@ -4,7 +4,9 @@ Requirements: Python 3.11 or newer.
 
 ## GUI setup
 
-1. Windows: double-click `setup.bat`. Linux/macOS: run
+1. Windows: extract the complete ZIP and run `HelixNodeSetup.exe` (or
+   `setup.bat`). The EXE is the setup GUI; it still needs an installed Python
+   3.11+ to create the node environment. Linux/macOS: run
    `bash start-node.sh --gui` or `python3 install_node.py`.
 2. Choose the node port, public URL, bootstrap nodes, and optional admin API
    protection.
@@ -33,7 +35,15 @@ set a persistent `HELIX_ADMIN_API_KEY` and enable the requirement. Different
 operators can use different keys because the key is local access control, not
 blockchain consensus data.
 
+The node does not perform proof-of-work, even for an administrator. It only
+provides block templates at `GET /mining/work` and validates externally solved
+blocks at `POST /mining/submit`. Use Helix Miner on your own CPU or NVIDIA GPU.
+
 Before exposing a node, use TLS or a secure tunnel, retain rate limits, use a
 firewall, and back up the database. All participating nodes must use compatible
-peer protocol 14 and matching consensus settings. Canonical transaction
+peer protocol 15 and matching consensus settings. Canonical transaction
 signatures and the signed transaction fee become mandatory at block 200.
+Replay-protected transaction envelopes plus Merkle/state commitments become
+mandatory at block 1000. On first protocol-15 start, the validated JSON database
+is imported into `database_PORT.sqlite3`; back up both files. Monitor
+`/health/details` and `/metrics` in addition to `/health`.

@@ -21,13 +21,13 @@ NODE_FILE = Path(os.getenv("HELIX_NODE_FILE", PROJECT_ROOT / f"node_{PORT}.json"
 
 def save_node(node: dict) -> None:
     NODE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    required_capabilities = {"transactions", "mining", "chain-sync", "mempool-gossip", "block-relay", "chainwork-consensus", "orphan-pool", "checkpoints", "dynamic-difficulty", "wallet-history", "custom-tokens", "token-exchange", "recent-transactions"}
+    required_capabilities = {"transactions", "mining", "chain-sync", "mempool-gossip", "block-relay", "chainwork-consensus", "orphan-pool", "checkpoints", "dynamic-difficulty", "wallet-history", "custom-tokens", "token-exchange", "recent-transactions", "transaction-envelopes", "state-commitments", "sqlite-index"}
     capabilities = sorted(required_capabilities | set(node.get("capabilities", [])))
     clean_node = {
         "id": node["id"],
         "port": int(node.get("port", PORT)),
         "created": node.get("created", datetime.now(timezone.utc).isoformat()),
-        "version": "1.0.0",
+        "version": "1.1.0",
         "capabilities": capabilities,
     }
     temporary = NODE_FILE.with_suffix(NODE_FILE.suffix + ".tmp")
@@ -61,8 +61,8 @@ def create_node(port: int) -> dict:
         "id": str(uuid.uuid4()),
         "port": int(port),
         "created": datetime.now(timezone.utc).isoformat(),
-        "version": "1.0.0",
-        "capabilities": ["transactions", "mining", "chain-sync", "mempool-gossip", "block-relay", "chainwork-consensus", "orphan-pool", "checkpoints", "dynamic-difficulty", "wallet-history", "custom-tokens", "token-exchange", "recent-transactions"],
+        "version": "1.1.0",
+        "capabilities": ["transactions", "mining", "chain-sync", "mempool-gossip", "block-relay", "chainwork-consensus", "orphan-pool", "checkpoints", "dynamic-difficulty", "wallet-history", "custom-tokens", "token-exchange", "recent-transactions", "transaction-envelopes", "state-commitments", "sqlite-index"],
     }
     save_node(node)
     return node

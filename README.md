@@ -1,8 +1,98 @@
-# Helix Coin 1.0.0
+# Helix Coin 1.1.0
 
 Helix is an educational proof-of-work cryptocurrency project with encrypted wallets, custom tokens, NFTs, peer discovery, mempool gossip, block relay, fork handling, checkpoints, dynamic difficulty, and network hardening.  
 
 ## Updates
+
+### 2026-08-02 (modern miner and CLI)
+
+- **Wallet-matched miner UI.** The desktop miner now uses the wallet's dark
+  Helix palette, logo, cards, status colors, responsive single-column layout,
+  cleaner inputs, highlighted live metrics, and color-coded scrollable logs.
+- **Headless CLI miner.** `helix_miner_cli.py` supports solo and pool mining,
+  CPU process selection, NVIDIA mode, multiple node URLs, rate updates, and
+  clean Ctrl+C shutdown without requiring tkinter.
+
+### 2026-07-29 (desktop downloads)
+
+- **Windows applications.** The wallet, CPU miner, and node setup GUI now ship
+  as Windows executables. The miner and node ZIPs include their EXEs, while the
+  wallet has a dedicated Windows ZIP.
+- **Linux wallet launcher.** The wallet download includes an executable shell
+  launcher, Helix icon, standard `.desktop` file, and per-user installer.
+- **Cloudflare-compatible packaging.** Desktop downloads are split so every
+  static file remains below Cloudflare Pages' 25 MiB per-file limit. Mobile
+  devices continue to use the installable PWA.
+
+### 2026-07-28 (wallet analytics and chart controls)
+
+- **Wallet-worth leaderboard.** The wallet now ranks funded public addresses by
+  confirmed HLX plus custom-token holdings valued at their current confirmed
+  HLX-pool spot price. Entries are paginated and open a candlestick history of
+  that address's estimated worth.
+- **Transparent valuation limits.** NFTs and tokens without active HLX
+  liquidity are excluded, and the UI warns that pool spot prices can be
+  manipulated and do not guarantee the amount obtainable by selling.
+- **NFT chart controls fixed.** Minute, Hour, Day, Month, Auto, Fit all,
+  start-time, width, and height controls now work inside the NFT detail modal,
+  with the same pan and wheel-zoom behavior as token charts.
+
+### 2026-07-27 (protocol 15 foundation)
+
+- **Replay-protected transactions.** Upgraded wallets sign `chain_id`, an account
+  `sequence`, and `valid_until_height`, preventing cross-chain replay and
+  expiring abandoned submissions.
+- **On-chain cancellation and replacement.** A pending transaction can be
+  replaced only by the same sender and sequence with a higher fee. The wallet's
+  Cancel button submits a signed zero-value cancellation replacement.
+- **Transactional storage and explorer index.** Nodes migrate a validated JSON
+  chain into SQLite/WAL, retain the JSON recovery export, create periodic
+  snapshots, and atomically index blocks and transactions.
+- **Block commitments.** From block **1000**, every block commits to a transaction
+  Merkle root and the resulting HLX/token/NFT state root. Published protocol
+  vectors lock canonical encodings and commitment calculations.
+- **Operations and releases.** `/health/details` provides actionable warnings,
+  `/metrics` exposes Prometheus data, and `tools/release_manifest.py` creates and
+  verifies Ed25519-signed release manifests.
+- **Pool protocol.** Pools use a rolling PPLNS work window and per-miner vardiff;
+  miners refresh automatically when their assigned share target changes.
+- **Deployment.** Protocol 15 rejects older peers. Upgrade node, miner, pool, and
+  web files together. Envelope and commitment enforcement is reserved for block
+  **1000**; no chain reset is required.
+
+### 2026-07-27 (security audit, protocol 14)
+
+- **External-only proof-of-work.** Nodes no longer expose `/mine`, `/mine/start`,
+  or mining-job status routes, so an admin key cannot make a node spend CPU on
+  proof-of-work. Helix Miner and pools still fetch templates and submit proofs
+  through `/mining/work` and `/mining/submit`.
+- **Downloadable pool GUI.** `helix-pool.zip` now provides a Python setup and monitoring app for pool wallet/node settings, dependency installation, process control, live shares/miners/hashrate, logs, and named or temporary Cloudflare tunnels.
+- **Cloudflare token inputs.** Both pool and node setup GUIs accept masked named-tunnel tokens and run `cloudflared tunnel run --token …` without saving the token to their settings or printing it in logs.
+- **Signature-replay defense.** Wallet signatures are normalized to canonical low-S ECDSA. Nodes reject malleated high-S submissions immediately, track a signature-equivalent canonical ID, and enforce canonical signatures in consensus from block 200. This prevents an attacker from changing a visible signature into a second valid transaction ID and replaying an asset transfer.
+- **Self-hosted signing code.** The web wallet no longer downloads secp256k1 code from a third-party CDN. The pinned Noble Curves 2.2.0 signing bundle is included in `web/secp256k1.js`, and the Content Security Policy now permits scripts from the wallet origin only.
+- **Gateway hardening.** Cloudflare node targets must use HTTPS except for loopback-only local development. The gateway strips cookies, authorization credentials, Cloudflare Access assertions, and referrers before forwarding requests to a node.
+- **Browser and admin defenses.** HSTS and cross-origin isolation headers protect the Pages deployment; the node-served wallet now receives CSP, anti-framing, MIME-sniffing, referrer, and permissions headers too. Node registration and security status routes are included in the fail-closed admin route set.
+- **Protocol 14.** This security release is superseded by protocol 15. The full report is in `SECURITY_AUDIT_2026-07-27.md`.
+
+### 2026-07-27 (NFT management, protocol 13)
+
+- **Manage NFTs.** Owners can create, edit, or cancel a fixed-price NFT listing from one management view. Editing the asking price preserves every active escrow-backed bid.
+- **View and accept every bid.** The management view shows all active bids from highest to lowest, including each bidder and amount, and lets the owner accept any selected bid.
+- **Creator-controlled royalties.** Only the NFT creator can update its royalty, and only while the creator still owns it before its first transfer or sale. The first ownership change permanently locks the royalty, even if the NFT later returns to the creator.
+- **Protocol 13.** Royalty updates and their permanent lock are consensus rules. Upgrade and restart every node before using this release; no chain reset is required.
+
+### 2026-07-27 (transaction fees, protocol 12)
+
+- **Signed network fee.** Every newly submitted transaction includes a configurable minimum fee (currently **1 HLX**) inside its signed payload. Changing the amount or fee invalidates the signature. The sender must have enough confirmed HLX for both the operation and its fee.
+- **Fees go to miners.** The miner confirming a block receives all fees in that block in addition to the 10 HLX subsidy. Fees move existing HLX and therefore do not increase issued supply or bypass the 20,000,000 HLX cap.
+- **Safe activation.** Existing fee-less signatures remain valid below block 200; from block 200 onward every transaction must include at least the configured fee. Upgrade and restart every node on protocol 12 before activation. No chain reset is required.
+- **Transaction parser compatibility.** Fee-less transactions created by a cached pre-fee wallet are parsed normally during the grace window instead of being mislabeled as malformed. A parser contract test now round-trips every supported transfer, token, liquidity, swap, and NFT transaction type through the public node format.
+
+### 2026-07-26 (NFT marketplace, protocol 11)
+
+- **On-chain NFT discovery and markets.** The wallet now has My NFTs, Discover, and Create NFT tabs. Owners can list NFTs for HLX, buyers can purchase a listing atomically, and users can place, raise, or cancel escrow-backed bids. Owners can accept a bid, transferring the NFT and paying the seller plus the NFT's creator royalty in the same confirmed transaction. Losing and cancelled bids are refunded by consensus. Displayed market value prefers the last confirmed sale, then the highest escrow-backed bid, and labels an unsold listing as an asking price rather than a proven value.
+- **Signed ownership actions.** Mint, transfer, list, cancel, bid, accept, and buy transactions are signed by the initiating wallet's secp256k1 private key. The key remains in the browser; nodes independently verify the signature, derived sender address, current ownership, balances, and exact signed fields.
+- **Protocol 11.** NFT marketplace operations are consensus rules. Upgrade and restart every node before confirming marketplace transactions; protocol-10 nodes are intentionally incompatible.
 
 ### 2026-07-26 (block-1 relaunch)
 
@@ -10,7 +100,7 @@ Helix is an educational proof-of-work cryptocurrency project with encrypted wall
 
 ### 2026-07-26
 
-- **NFTs.** Two new consensus transactions, `nft_mint` and `nft_transfer`, back real one-of-a-kind tokens: each NFT has a unique id, a creator, a single explicit owner (not a fungible balance), on-chain metadata (name, description, image, traits) pinned by a signed SHA-256 content hash, and a creator royalty for a future marketplace. Only the owner can transfer; forged ids, tampered metadata, and double mints are rejected. New read routes `GET /nfts`, `GET /nft/{id}` (with provenance history), and `GET /nfts/owner/{address}`, plus a wallet **NFTs** tab to create, view a gallery of, and transfer NFTs. Update every node — it is a consensus feature.
+- **NFTs.** Consensus-backed one-of-a-kind tokens have a unique id, creator, single owner, on-chain metadata, signed SHA-256 content hash, and creator royalty. The wallet now separates **My NFTs**, **Discover**, and **Create NFT**, while the marketplace supports signed listings, escrow-backed bids, bid cancellation, direct purchases, and owner acceptance. Confirmed sales, active asks, and bids provide clearly labelled market-value signals. Only the current owner can transfer or list an NFT, and every marketplace action is signed by the acting wallet. Update every node — it is a consensus feature.
 - **Block-timestamp fix.** Fast, low-difficulty blocks that share a clock tick (or miners that stamp whole seconds) were wrongly rejected as "another miner won this height." A child block may now sit up to a small tolerance behind its parent (still capped to the near future), and `/mining/submit` now returns the **actual** rejection reason instead of a vague catch-all. Consensus rule — update all nodes.
 - **Wallet quality-of-life.** Payment-request **QR codes and shareable links** (address + amount), an in-app **camera QR scanner** on Send, a saved-contacts **address book**, a **confirmation-depth** counter on mined transactions, opt-in **desktop notifications** when a pending transaction confirms, **installable PWA** (desktop and mobile, offline-capable), and an **Explorer** tab for browsing blocks, transactions, and addresses with a network-difficulty chart.
 - **Auto-checkpoints.** The node periodically records a checkpoint at a safely buried height to harden deep history against long-range reorgs, with no manual configuration.
@@ -276,11 +366,14 @@ python run_pool.py                                   # serves on port 8100
 ```
 
 Optional: `HELIX_POOL_FEE_PERCENT` (default 1), `HELIX_POOL_SHARE_SUBTRACT`
-(share difficulty = network difficulty minus this, default 2), `HELIX_POOL_PORT`
-(default 8100). Expose port 8100 with its own tunnel and share that URL with
-miners. Block templates are addressed to the pool wallet; when a member solves a
-block the reward is split proportionally to each miner's shares and paid out
-on-chain, with the fee kept by the operator. Payouts are whole HLX, so a 1% fee
+(initial share difficulty reduction, default 2), `HELIX_POOL_PORT` (default
+8100), `HELIX_POOL_PPLNS_WINDOW` (default 10,000 accepted shares), and
+`HELIX_POOL_SHARE_SECONDS` (vardiff target, default 15 seconds). Expose port 8100
+with its own tunnel and share that URL with miners. Block templates are addressed
+to the pool wallet; when a member solves a block the reward is split by each
+miner's weighted work in the rolling PPLNS window and paid out
+on-chain, with the fee kept by the operator. The pool reserves the network fee
+for each signed payout transaction before splitting the round income. Payouts are whole HLX, so a 1% fee
 on a 10 HLX reward rounds to 0 — raise the percentage for a reliable cut.
 `GET /pool/info` and `GET /pool/stats` expose live pool data.
 
@@ -346,13 +439,14 @@ peers relay the proof so the same transaction is not immediately reintroduced.
 
 Helix does not claim wire compatibility with Solana. In Solana terminology, DAD maps most closely to the mint authority. Solana also supports separate freeze and metadata-update authorities; those are intentionally not combined into the current Helix consensus rules.
 
-This release uses peer protocol version 10. The chain has been relaunched from a fresh genesis with every rule active from block 1: a flat 10 HLX reward per block, fine-grained difficulty seeded at 5.5 retargeting every 100 blocks toward a 10-minute average (first retarget at block 101, no reset height), and tokens, liquidity pools, atomic token-to-token swaps, NFTs, and the native HLX DAD identity all active from block 1. Consensus caps the total native supply at 20,000,000 HLX. Because this is a consensus break, every node must reset its chain data and run this build; earlier chain data is preserved under `chain_backup_*/`.
+This release uses peer protocol version 14. The chain has been relaunched from a fresh genesis with every rule active from block 1: a flat 10 HLX reward per block, fine-grained difficulty seeded at 5.5 retargeting every 100 blocks toward a 10-minute average (first retarget at block 101, no reset height), and tokens, liquidity pools, atomic token-to-token swaps, NFTs, the NFT marketplace, and the native HLX DAD identity all active from block 1. Consensus caps the total native supply at 20,000,000 HLX. Signed transaction fees and canonical low-S signatures become mandatory at block 200. Every node must upgrade; earlier protocol versions are intentionally incompatible.
 
 From block 1, `9d7c721b209cee99a8158c524fa433ead9236781` is
 the protocol-defined native HLX DAD governance identity. It has no mint power:
 all new HLX remains mining-only, the reward remains consensus-controlled,
 and the DAD cannot bypass or raise the 20,000,000 HLX cap. The token metadata
-snapshot rule, the token exchange, atomic swaps, and NFT mint/transfer are all
+snapshot rule, the token exchange, atomic swaps, and signed NFT mint, transfer,
+listing, escrowed bidding, purchase, and royalty settlement are all
 active from block 1 as well.
 
 ## Performance improvements in 0.7.0

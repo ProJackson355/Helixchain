@@ -5,12 +5,12 @@
  * create. The cache is only a fallback for offline use. API traffic and any
  * non-GET request are never touched, so wallet actions always hit the live node.
  */
-const CACHE = 'helix-shell-v6';
+const CACHE = 'helix-shell-v11';
 // Only paths served identically by both a self-hosted node and Cloudflare Pages,
 // so addAll never fails. Scripts (app.js, qrcode.js) are cached at runtime.
 const SHELL = [
   '/', '/index.html', '/manifest.webmanifest',
-  '/app.js?v=20260738', '/pwa.js?v=3', '/qrcode.js?v=1', '/jsqr.js?v=1',
+  '/app.js?v=20260741', '/pwa.js?v=4', '/qrcode.js?v=1', '/jsqr.js?v=1',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png',
   '/secp256k1.js?v=2.2.0',
 ];

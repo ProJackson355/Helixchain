@@ -5,6 +5,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 import node.node as node_api
+from node.transaction import Transaction
 
 
 class CancellationProofTests(unittest.TestCase):
@@ -17,10 +18,10 @@ class CancellationProofTests(unittest.TestCase):
         )
         sender = hashlib.sha256(compressed).hexdigest()[:40]
         tx_id = "a" * 64
-        signature = key.sign(
+        signature = Transaction.canonical_signature_hex(key.sign(
             node_api._cancellation_payload(tx_id, sender),
             ec.ECDSA(hashes.SHA256()),
-        ).hex()
+        ).hex())
         pem = public.public_bytes(
             serialization.Encoding.PEM,
             serialization.PublicFormat.SubjectPublicKeyInfo,

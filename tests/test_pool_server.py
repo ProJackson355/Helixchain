@@ -45,6 +45,14 @@ def test_compute_payouts_no_shares():
     assert payouts == {} and kept == 100
 
 
+def test_compute_payouts_reserves_each_on_chain_payout_fee():
+    payouts, fee, kept = compute_payouts(10, 0.0, {ADDR_A: 1, ADDR_B: 1}, transaction_fee=1)
+    assert fee == 0
+    assert payouts == {ADDR_A: 4, ADDR_B: 4}
+    # Two HLX remain available to pay the two signed payout transactions.
+    assert kept == 2
+
+
 def test_valid_share_is_counted():
     block = {"index": 5, "transactions": [], "previous_hash": "0" * 64, "timestamp": 1, "nonce": 0}
     nonce = _find_nonce(block, 1, meets=True)

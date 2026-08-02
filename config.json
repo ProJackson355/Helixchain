@@ -4,8 +4,8 @@
     "sync_interval": 30,
     "max_peers": 250,
     "request_timeout": 3,
-    "version": "1.0.0",
-    "protocol": 10,
+    "version": "1.1.0",
+    "protocol": 15,
     "network": "mainnet"
   },
   "network": {
@@ -27,6 +27,9 @@
   },
     "_comment": "Block-1 relaunch: every rule is active from genesis. Flat 10 HLX reward, fine difficulty seeded at 5.5 toward 10-minute blocks, retargeting every 100 blocks. Historical phase-ins (reward drop, difficulty reset, staged token/NFT/swap activation) are all collapsed to height 1. Requires a fresh chain — reset every node together.",
   "blockchain": {
+    "storage_backend": "sqlite",
+    "storage_snapshot_interval": 25,
+    "storage_keep_snapshots": 20,
     "difficulty": 3,
     "difficulty_reset_value": 3,
     "difficulty_reset_height": -1,
@@ -34,12 +37,20 @@
     "mining_reward": 10,
     "mining_reward_activation_height": 1,
     "fractional_mining_reward": "10",
-    "fractional_reward_activation_height": 1,
-    "native_dad_address": "9d7c721b209cee99a8158c524fa433ead9236781",
-    "native_dad_activation_height": 1,
+    "fractional_reward_activation_height": 198,
+    "native_dad_address": "192c56ca1eb0ab42d57bc5144a1d137fb3f506ff",
+    "native_dad_activation_height": 198,
     "max_supply": 20000000,
+    "transaction_fee": 1,
+    "transaction_fee_activation_height": 200,
+    "canonical_signature_activation_height": 200,
+    "chain_id": "helix-mainnet-v1",
+    "transaction_envelope_activation_height": 1000,
+    "max_transaction_lifetime_blocks": 144,
+    "state_commitment_activation_height": 1000,
     "min_difficulty": 3,
     "max_difficulty": 6,
+    "canonical_signature_activation_height": 1,
     "difficulty_adjustment_interval": 100,
     "difficulty_interval_change_height": -1,
     "difficulty_new_adjustment_interval": 100,
@@ -59,6 +70,7 @@
     "token_exchange_activation_height": 1,
     "token_swap_activation_height": 1,
     "nft_activation_height": 1,
+    "nft_market_activation_height": 1,
     "max_orphans": 100,
     "orphan_ttl_seconds": 1800,
     "checkpoints": {}
@@ -83,12 +95,13 @@
     "require_admin_api_key": false,
     "admin_api_key": "",
     "admin_paths": [
-      "/mine",
       "/sync",
       "/nodes/sync_now",
       "/nodes/discover",
       "/nodes/audit",
-      "/nodes/submissions"
+      "/nodes/submissions",
+      "/nodes/register",
+      "/security/status"
     ],
     "cors_allowed_origins": [
       "http://localhost",

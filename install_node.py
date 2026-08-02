@@ -28,8 +28,39 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
-ROOT = Path(__file__).resolve().parent
+from gui_branding import apply_helix_icon, set_windows_app_id
+
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
 CONFIG_FILE = ROOT / "config.json"
+
+
+def system_python_command() -> list[str] | None:
+    """Find a real Python installation when this GUI is a frozen executable."""
+    configured = os.getenv("HELIX_PYTHON", "").strip()
+    candidates: list[list[str]] = []
+    if configured:
+        candidates.append([configured])
+    if not getattr(sys, "frozen", False):
+        candidates.append([sys.executable])
+    if os.name == "nt":
+        candidates.extend((["py", "-3"], ["python"]))
+    else:
+        candidates.extend((["python3"], ["python"]))
+    for command in candidates:
+        executable = shutil.which(command[0]) if not Path(command[0]).is_file() else command[0]
+        if not executable:
+            continue
+        probe = [executable, *command[1:], "-c", "import sys; raise SystemExit(sys.version_info < (3, 11))"]
+        try:
+            if subprocess.run(probe, capture_output=True, timeout=10).returncode == 0:
+                return [executable, *command[1:]]
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return None
 
 
 class InstallerApp:
@@ -109,10 +140,17 @@ class InstallerApp:
                        activeforeground=self.TEXT, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 0))
 
         self.tunnel_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(card, text="Auto-generate a public URL (Cloudflare tunnel) and join the network (optional)",
+        tk.Checkbutton(card, text="Start a Cloudflare tunnel (optional)",
                        variable=self.tunnel_var, bg=self.CARD, fg=self.TEXT,
                        selectcolor=self.BG, activebackground=self.CARD,
                        activeforeground=self.TEXT, font=("Segoe UI", 9)).pack(anchor="w")
+
+        self._label(card, "Cloudflare named-tunnel token", optional=True)
+        self.cf_token_var = tk.StringVar(value="")
+        ttk.Entry(card, textvariable=self.cf_token_var, show="•").pack(fill="x")
+        tk.Label(card, text="Leave blank for a temporary trycloudflare.com URL. For a token, set the tunnel's public hostname service in Cloudflare to this node's http://localhost:PORT. The token is never saved.",
+                 bg=self.CARD, fg=self.MUTED, font=("Segoe UI", 8), wraplength=540,
+                 justify="left").pack(anchor="w", pady=(1, 3))
 
         self.open_ui_var = tk.BooleanVar(value=True)
         tk.Checkbutton(card, text="Open the wallet UI in my browser when ready",
@@ -191,8 +229,9 @@ class InstallerApp:
             # option like Oracle Cloud, Tailscale Funnel, or an ngrok domain).
             public_url = None
             tunnel_url = None
-            if self.tunnel_var.get():
-                tunnel_url = self._start_tunnel_and_capture(port)
+            cloudflare_token = self.cf_token_var.get().strip()
+            if self.tunnel_var.get() or cloudflare_token:
+                tunnel_url = self._start_tunnel_and_capture(port, cloudflare_token)
                 if tunnel_url:
                     self._set_public_url(tunnel_url)
                     public_url = tunnel_url
@@ -251,8 +290,12 @@ class InstallerApp:
         if venv_python.exists():
             self.log("[*] Virtual environment already exists.")
             return venv_python
+        python_command = system_python_command()
+        if not python_command:
+            self.log("[X] Python 3.11 or newer was not found. Install Python, then run this installer again.")
+            return None
         self.log("[*] Creating virtual environment (.venv) …")
-        result = subprocess.run([sys.executable, "-m", "venv", str(ROOT / ".venv")],
+        result = subprocess.run([*python_command, "-m", "venv", str(ROOT / ".venv")],
                                 capture_output=True, text=True)
         if result.returncode != 0 or not venv_python.exists():
             self.log("[X] Could not create the virtual environment. Install Python 3.11+ first.")
@@ -295,26 +338,32 @@ class InstallerApp:
             kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
         subprocess.Popen(args, **kwargs)
 
-    def _start_tunnel_and_capture(self, port):
-        """Start a Cloudflare quick tunnel and read back its auto-generated
-        https://<name>.trycloudflare.com URL. Runs in the background and keeps
-        running after the installer closes."""
+    def _start_tunnel_and_capture(self, port, token=""):
+        """Start a named-token tunnel or capture a quick-tunnel URL."""
         if not shutil.which("cloudflared"):
             self.log("[!] cloudflared not found — install it to expose the node. Running locally only.")
             self.log("    Download: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
             return None
         log_path = os.path.join(tempfile.gettempdir(), "helix_tunnel.log")
-        self.log("[*] Starting a Cloudflare tunnel and generating a public URL …")
+        token = token.strip()
+        self.log("[*] Starting a named Cloudflare tunnel …" if token
+                 else "[*] Starting a Cloudflare tunnel and generating a public URL …")
         try:
             log_file = open(log_path, "w", encoding="utf-8", errors="replace")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            command = (["cloudflared", "tunnel", "run", "--token", token]
+                       if token else
+                       ["cloudflared", "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"])
             self._tunnel_proc = subprocess.Popen(
-                ["cloudflared", "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
+                command,
                 cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT, creationflags=flags,
             )
             log_file.close()  # the child keeps its own inherited handle
         except Exception as exc:
             self.log(f"[!] Could not start cloudflared: {exc}")
+            return None
+        if token:
+            self.log("[✓] Named Cloudflare tunnel started. Use the public hostname configured in your Cloudflare dashboard.")
             return None
         pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
         deadline = time.time() + 45
@@ -372,7 +421,9 @@ class InstallerApp:
 
 
 def main():
+    set_windows_app_id("NodeInstaller")
     root = tk.Tk()
+    apply_helix_icon(root, ROOT)
     try:
         ttk.Style().theme_use("clam")
     except tk.TclError:

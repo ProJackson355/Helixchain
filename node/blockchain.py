@@ -6,13 +6,15 @@ import re
 import threading
 import time
 from collections import defaultdict
-from decimal import Decimal
+from copy import deepcopy
+from decimal import Decimal, localcontext
 from pathlib import Path
 from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives import serialization
 
 from node.transaction import Transaction
+from node.storage import SQLiteStateStore
 
 PORT = os.getenv("NODE_PORT", "8000")
 ADDRESS_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -55,6 +57,10 @@ def _transaction_from_dict(data: dict) -> Transaction:
         nft_id=data.get("nft_id"),
         attributes=data.get("attributes"),
         royalty_bps=data.get("royalty_bps"),
+        fee=data.get("fee"),
+        chain_id=data.get("chain_id"),
+        sequence=data.get("sequence"),
+        valid_until_height=data.get("valid_until_height"),
     )
     tx.signature = data.get("signature")
     tx.tx_id = data.get("tx_id")
@@ -73,12 +79,16 @@ class Block:
         timestamp=None,
         nonce=0,
         hash=None,
+        transaction_root=None,
+        state_root=None,
     ):
         self.index = int(index)
         self.transactions = transactions
         self.previous_hash = previous_hash
         self.timestamp = timestamp if timestamp is not None else time.time()
         self.nonce = int(nonce)
+        self.transaction_root = transaction_root
+        self.state_root = state_root
         self.hash = hash or self.calculate_hash()
 
     def calculate_hash(self) -> str:
@@ -89,6 +99,10 @@ class Block:
             "timestamp": self.timestamp,
             "nonce": self.nonce,
         }
+        if self.transaction_root is not None:
+            block_data["transaction_root"] = self.transaction_root
+        if self.state_root is not None:
+            block_data["state_root"] = self.state_root
         return hashlib.sha256(
             json.dumps(block_data, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -125,6 +139,15 @@ class Blockchain:
             database_path
             or os.getenv("HELIX_DATABASE", f"database_{PORT}.json")
         )
+        self.storage_backend = str(setting(
+            "storage_backend", "HELIX_STORAGE_BACKEND", "json"
+        )).lower()
+        if self.storage_backend not in {"json", "sqlite"}:
+            raise ValueError("storage_backend must be json or sqlite")
+        self.sqlite_database = Path(os.getenv(
+            "HELIX_SQLITE_DATABASE", str(self.database.with_suffix(".sqlite3"))
+        ))
+        self._state_store = None
         self.difficulty = int(setting("difficulty", "HELIX_DIFFICULTY", 3))
         self.min_difficulty = int(
             setting("min_difficulty", "HELIX_MIN_DIFFICULTY", self.difficulty)
@@ -224,6 +247,42 @@ class Blockchain:
         self.nft_activation_height = int(
             setting("nft_activation_height", "HELIX_NFT_ACTIVATION_HEIGHT", 1)
         )
+        self.nft_market_activation_height = int(setting(
+            "nft_market_activation_height", "HELIX_NFT_MARKET_HEIGHT", 1
+        ))
+        self.transaction_fee = int(setting(
+            "transaction_fee", "HELIX_TRANSACTION_FEE", 1
+        ))
+        self.transaction_fee_activation_height = int(setting(
+            "transaction_fee_activation_height", "HELIX_TRANSACTION_FEE_HEIGHT", 200
+        ))
+        self.canonical_signature_activation_height = int(setting(
+            "canonical_signature_activation_height",
+            "HELIX_CANONICAL_SIGNATURE_HEIGHT",
+            200,
+        ))
+        if self.transaction_fee < 0:
+            raise ValueError("transaction fee cannot be negative")
+        self.chain_id = str(setting("chain_id", "HELIX_CHAIN_ID", "helix-mainnet-v1"))
+        self.transaction_envelope_activation_height = int(setting(
+            "transaction_envelope_activation_height",
+            "HELIX_TRANSACTION_ENVELOPE_HEIGHT",
+            1000,
+        ))
+        self.max_transaction_lifetime_blocks = int(setting(
+            "max_transaction_lifetime_blocks",
+            "HELIX_MAX_TRANSACTION_LIFETIME_BLOCKS",
+            144,
+        ))
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,63}", self.chain_id):
+            raise ValueError("chain_id must be a lowercase network identifier")
+        if self.max_transaction_lifetime_blocks < 1:
+            raise ValueError("maximum transaction lifetime must be positive")
+        self.state_commitment_activation_height = int(setting(
+            "state_commitment_activation_height",
+            "HELIX_STATE_COMMITMENT_HEIGHT",
+            self.transaction_envelope_activation_height,
+        ))
         self.max_orphans = int(setting("max_orphans", "HELIX_MAX_ORPHANS", 100))
         self.orphan_ttl_seconds = int(
             setting("orphan_ttl_seconds", "HELIX_ORPHAN_TTL", 1800)
@@ -276,6 +335,16 @@ class Blockchain:
             "HELIX_AUTO_CHECKPOINTS_FILE",
             self.database.parent / f"auto_checkpoints_{self.database.stem}.json"))
         self.set_checkpoints(consensus.get("checkpoints", {}))
+        if self.storage_backend == "sqlite":
+            self._state_store = SQLiteStateStore(
+                self.sqlite_database,
+                snapshot_interval=int(setting(
+                    "storage_snapshot_interval", "HELIX_STORAGE_SNAPSHOT_INTERVAL", 25
+                )),
+                keep_snapshots=int(setting(
+                    "storage_keep_snapshots", "HELIX_STORAGE_KEEP_SNAPSHOTS", 20
+                )),
+            )
         self._load_auto_checkpoints()
         self.load()
         self.update_auto_checkpoints()
@@ -304,6 +373,41 @@ class Blockchain:
     def _genesis_block() -> Block:
         return Block(0, [], "0", timestamp=0, nonce=0)
 
+    @staticmethod
+    def transaction_merkle_root(transactions: list[Transaction]) -> str:
+        leaves = [bytes.fromhex(tx.tx_id) for tx in transactions if tx.tx_id]
+        if not leaves:
+            return hashlib.sha256(b"").hexdigest()
+        while len(leaves) > 1:
+            if len(leaves) % 2:
+                leaves.append(leaves[-1])
+            leaves = [
+                hashlib.sha256(leaves[index] + leaves[index + 1]).digest()
+                for index in range(0, len(leaves), 2)
+            ]
+        return leaves[0].hex()
+
+    @staticmethod
+    def state_root(balances, tokens, token_balances, token_supply, nfts) -> str:
+        """Hash the complete deterministic account, token, and NFT state."""
+        state = {
+            "balances": {
+                key: Transaction.serialized_amount(value)
+                for key, value in sorted(balances.items()) if value != 0
+            },
+            "tokens": {key: tokens[key] for key in sorted(tokens)},
+            "token_balances": {
+                f"{mint}:{owner}": value
+                for (mint, owner), value in sorted(token_balances.items()) if value != 0
+            },
+            "token_supply": {
+                key: value for key, value in sorted(token_supply.items()) if value != 0
+            },
+            "nfts": {key: nfts[key] for key in sorted(nfts)},
+        }
+        encoded = json.dumps(state, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
     def create_genesis(self) -> None:
         self.chain = [self._genesis_block()]
         self.pending_transactions = []
@@ -324,16 +428,31 @@ class Blockchain:
         token_history: dict[tuple[str, str], list[tuple[Block, Transaction]]] = defaultdict(list)
         nfts: dict[str, dict] = {}
         nft_history: dict[str, list[tuple[Block, Transaction]]] = defaultdict(list)
+        sender_sequences: dict[str, int] = defaultdict(int)
         for block in self.chain:
+            block_fees = 0
             for tx in block.transactions:
                 if tx.sender == "SYSTEM":
                     total_supply += tx.amount
                     balances[tx.receiver] += tx.amount
-                elif tx.tx_type == "transfer":
+                    if tx.receiver != tx.sender:
+                        history[tx.receiver].append((block, tx))
+                    if tx.tx_id:
+                        transactions[tx.tx_id] = (block, tx)
+                    continue
+
+                fee = self.effective_transaction_fee(tx)
+                balances[tx.sender] -= fee
+                block_fees += fee
+                if tx.tx_type == "transfer":
                     balances[tx.sender] -= tx.amount
                     balances[tx.receiver] += tx.amount
+                elif tx.tx_type == "cancel":
+                    pass
                 elif tx.tx_type in Transaction.NFT_TYPES:
-                    self._apply_nft_transaction(tx, nfts, block_index=block.index)
+                    self._apply_nft_transaction(
+                        tx, nfts, block_index=block.index, hlx_balances=balances
+                    )
                     nft_history[tx.nft_id].append((block, tx))
                 else:
                     self._apply_token_transaction(
@@ -355,13 +474,22 @@ class Blockchain:
                     if tx.receiver != tx.sender:
                         token_history[(tx.mint_address, tx.receiver)].append((block, tx))
                 if tx.sender != "SYSTEM":
+                    sender_sequences[tx.sender] += 1
                     history[tx.sender].append((block, tx))
                 if tx.receiver != tx.sender:
                     history[tx.receiver].append((block, tx))
                 if tx.tx_id:
                     transactions[tx.tx_id] = (block, tx)
+            if block_fees and block.transactions and block.transactions[-1].sender == "SYSTEM":
+                balances[block.transactions[-1].receiver] += block_fees
         self._balance_index = dict(balances)
         self._transaction_index = transactions
+        self._canonical_transaction_ids = {
+            tx.canonical_id()
+            for block in self.chain
+            for tx in block.transactions
+            if tx.sender != "SYSTEM" and tx.signature
+        }
         self._address_history = history
         self._total_supply_cache = total_supply
         self._tokens = tokens
@@ -371,23 +499,129 @@ class Blockchain:
         self._token_history = token_history
         self._nfts = nfts
         self._nft_history = nft_history
+        self._sender_sequences = dict(sender_sequences)
+
+    def confirmed_sequence(self, address: str) -> int:
+        """Return the next consensus sequence after confirmed transactions."""
+        return int(getattr(self, "_sender_sequences", {}).get(address, 0))
+
+    def next_sequence(self, address: str, pending=None) -> int:
+        """Return the first unused contiguous sequence, including the mempool."""
+        expected = self.confirmed_sequence(address)
+        pool = self.pending_transactions if pending is None else pending
+        used = {
+            tx.sequence for tx in pool
+            if tx.sender == address and tx.sequence is not None
+        }
+        while expected in used:
+            expected += 1
+        return expected
+
+    def envelope_info(self, address: str) -> dict:
+        height = len(self.chain)
+        return {
+            "chain_id": self.chain_id,
+            "current_height": max(0, height - 1),
+            "next_block_height": height,
+            "next_sequence": self.next_sequence(address),
+            "valid_until_height": height + self.max_transaction_lifetime_blocks,
+            "activation_height": self.transaction_envelope_activation_height,
+            "active": height >= self.transaction_envelope_activation_height,
+            "max_lifetime_blocks": self.max_transaction_lifetime_blocks,
+            "minimum_fee": self.transaction_fee,
+        }
+
+    def envelope_rejection_reason(
+        self, tx: Transaction, block_height: int, expected_sequence: int | None = None
+    ) -> str | None:
+        values = (tx.chain_id, tx.sequence, tx.valid_until_height)
+        required = block_height >= self.transaction_envelope_activation_height
+        if not required and all(value is None for value in values):
+            return None
+        if any(value is None for value in values):
+            return "transaction envelope requires chain_id, sequence, and valid_until_height"
+        if tx.chain_id != self.chain_id:
+            return "transaction chain_id does not match this network"
+        if tx.sequence < 0:
+            return "transaction sequence cannot be negative"
+        if expected_sequence is not None and tx.sequence != expected_sequence:
+            return f"transaction sequence must be {expected_sequence}"
+        if tx.valid_until_height < block_height:
+            return "transaction has expired"
+        if tx.valid_until_height > block_height + self.max_transaction_lifetime_blocks:
+            return "transaction expiry is too far in the future"
+        if tx.tx_type == "cancel" and (tx.sender != tx.receiver or tx.amount != 0):
+            return "cancel transaction must send zero HLX back to its sender"
+        return None
 
     def get_nfts(self) -> list[dict]:
         with self._lock:
-            return [dict(nft) for nft in getattr(self, "_nfts", {}).values()]
+            return [deepcopy(nft) for nft in getattr(self, "_nfts", {}).values()]
 
     def get_nft(self, nft_id: str) -> dict | None:
         with self._lock:
             nft = getattr(self, "_nfts", {}).get(nft_id)
-            return dict(nft) if nft else None
+            return deepcopy(nft) if nft else None
 
     def get_nfts_by_owner(self, owner: str) -> list[dict]:
         with self._lock:
-            return [dict(nft) for nft in getattr(self, "_nfts", {}).values() if nft.get("owner") == owner]
+            return [
+                deepcopy(nft) for nft in getattr(self, "_nfts", {}).values()
+                if nft.get("owner") == owner
+            ]
 
     def get_nft_history(self, nft_id: str):
         with self._lock:
             return list(getattr(self, "_nft_history", {}).get(nft_id, ()))
+
+    def get_nft_market_history(self, nft_id: str) -> list[dict]:
+        """Reconstruct confirmed sale prices for an NFT from the chain.
+
+        ``nft_accept_bid`` deliberately carries a zero control amount, so its
+        sale price has to be recovered from the accepted escrowed bid.  Keeping
+        this as a derived read model avoids changing transaction signatures or
+        persisted chain data.
+        """
+        with self._lock:
+            if nft_id not in getattr(self, "_nfts", {}):
+                return []
+            bids: dict[str, int] = {}
+            points = []
+            for block in self.chain:
+                for tx in block.transactions:
+                    if tx.nft_id != nft_id:
+                        continue
+                    if tx.tx_type == "nft_bid":
+                        bids[tx.sender] = int(tx.amount)
+                    elif tx.tx_type == "nft_cancel_bid":
+                        bids.pop(tx.sender, None)
+                    elif tx.tx_type == "nft_accept_bid":
+                        price = bids.get(tx.receiver)
+                        if price is not None:
+                            points.append({
+                                "block": block.index,
+                                "timestamp": block.timestamp,
+                                "tx_id": tx.tx_id,
+                                "tx_type": tx.tx_type,
+                                "price": price,
+                                "seller": tx.sender,
+                                "buyer": tx.receiver,
+                            })
+                        bids.clear()
+                    elif tx.tx_type == "nft_buy":
+                        points.append({
+                            "block": block.index,
+                            "timestamp": block.timestamp,
+                            "tx_id": tx.tx_id,
+                            "tx_type": tx.tx_type,
+                            "price": int(tx.amount),
+                            "seller": tx.receiver,
+                            "buyer": tx.sender,
+                        })
+                        bids.clear()
+                    elif tx.tx_type in {"nft_transfer", "nft_cancel_listing"}:
+                        bids.clear()
+            return points
 
     def get_address_history(self, address: str):
         with self._lock:
@@ -429,12 +663,22 @@ class Blockchain:
                     "timestamp": block.timestamp,
                     "nonce": block.nonce,
                     "hash": block.hash,
+                    **({"transaction_root": block.transaction_root} if block.transaction_root is not None else {}),
+                    **({"state_root": block.state_root} if block.state_root is not None else {}),
                 }
                 for block in self.chain
             ],
             "pending": [{**tx.to_dict(), "received_at": tx.received_at} for tx in self.pending_transactions],
             "cancelled": self.cancelled_transactions,
         }
+
+        if self._state_store is not None:
+            tip = self.chain[-1] if self.chain else None
+            self._state_store.save(
+                data,
+                height=tip.index if tip else -1,
+                tip_hash=tip.hash if tip else "",
+            )
 
         self.database.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.database.with_suffix(self.database.suffix + ".tmp")
@@ -456,13 +700,17 @@ class Blockchain:
 
     def load(self) -> None:
         with self._lock:
-            if not self.database.exists():
+            stored_data = self._state_store.load() if self._state_store is not None else None
+            if stored_data is None and not self.database.exists():
                 self.create_genesis()
                 return
 
             try:
-                with self.database.open("r", encoding="utf-8") as file:
-                    data = json.load(file)
+                if stored_data is not None:
+                    data = stored_data
+                else:
+                    with self.database.open("r", encoding="utf-8") as file:
+                        data = json.load(file)
                 loaded_chain = []
                 for saved in data.get("chain", []):
                     transactions = [
@@ -477,6 +725,8 @@ class Blockchain:
                             saved["timestamp"],
                             saved["nonce"],
                             saved["hash"],
+                            saved.get("transaction_root"),
+                            saved.get("state_root"),
                         )
                     )
 
@@ -509,6 +759,12 @@ class Blockchain:
                         continue
                 self.pending_transactions = pending
                 self._rebuild_indexes()
+                # First SQLite start imports the existing JSON database only
+                # after the full chain has passed consensus validation.
+                if self._state_store is not None:
+                    tip = self.chain[-1]
+                    if stored_data is None or self._state_store.index_needs_rebuild(tip.index):
+                        self._state_store.save(data, height=tip.index, tip_hash=tip.hash)
             except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                 # Fail closed. A loader bug or temporary schema mismatch must
                 # never move a valid chain aside and silently start a new one.
@@ -522,28 +778,68 @@ class Blockchain:
             return self._balance_index.get(address, 0)
         balance = 0
         for block in chain:
+            block_fees = 0
             for tx in block.transactions:
+                if tx.sender == "SYSTEM":
+                    if tx.receiver == address:
+                        balance += tx.amount
+                    continue
+                fee = self.effective_transaction_fee(tx)
+                block_fees += fee
+                if tx.sender == address:
+                    balance -= fee
                 if tx.tx_type != "transfer":
                     continue
                 if tx.sender == address:
                     balance -= tx.amount
                 if tx.receiver == address:
                     balance += tx.amount
+            if (
+                block_fees and block.transactions
+                and block.transactions[-1].sender == "SYSTEM"
+                and block.transactions[-1].receiver == address
+            ):
+                balance += block_fees
         return balance
+
+    @staticmethod
+    def effective_transaction_fee(tx: Transaction) -> int:
+        return 0 if tx.fee is None else tx.fee
+
+    def transaction_fee_rejection_reason(self, tx: Transaction, block_height: int) -> str | None:
+        if tx.fee is None:
+            if block_height >= self.transaction_fee_activation_height:
+                return f"transaction fee is required (minimum {self.transaction_fee} HLX)"
+            return None
+        if tx.fee < self.transaction_fee:
+            return f"transaction fee must be at least {self.transaction_fee} HLX"
+        return None
 
     def get_available_balance(self, address: str, extra_pending=None) -> int:
         pending = self.pending_transactions if extra_pending is None else extra_pending
-        outgoing = sum(
-            (
-                tx.hlx_amount if tx.tx_type == "token_pool_create"
-                else tx.amount
-            )
-            for tx in pending
-            if tx.sender == address and tx.tx_type in {
-                "transfer", "token_pool_create", "token_pool_add_hlx", "token_buy"
-            }
-        )
-        return self.get_balance(address) - outgoing
+        hlx_balances = defaultdict(int, self._balance_index)
+        tokens = deepcopy(self._tokens)
+        token_balances = defaultdict(int, self._token_balances)
+        token_supply = defaultdict(int, self._token_supply)
+        nfts = deepcopy(getattr(self, "_nfts", {}))
+        for tx in pending:
+            hlx_balances[tx.sender] -= self.effective_transaction_fee(tx)
+            if tx.tx_type == "transfer":
+                hlx_balances[tx.sender] -= tx.amount
+                hlx_balances[tx.receiver] += tx.amount
+            elif tx.tx_type == "cancel":
+                continue
+            elif tx.tx_type in Transaction.NFT_TYPES:
+                self._apply_nft_transaction(
+                    tx, nfts, block_index=len(self.chain),
+                    hlx_balances=hlx_balances,
+                )
+            elif tx.tx_type in Transaction.TOKEN_TYPES:
+                self._apply_token_transaction(
+                    tx, tokens, token_balances, token_supply,
+                    block_index=len(self.chain), hlx_balances=hlx_balances,
+                )
+        return hlx_balances[address]
 
     def get_total_supply(self, chain=None) -> int:
         if chain is None:
@@ -599,23 +895,68 @@ class Blockchain:
                 return "attribute value must be 1 to 80 characters"
         return None
 
-    def _apply_nft_transaction(self, tx: Transaction, nfts: dict, block_index: int | None = None) -> str | None:
+    @staticmethod
+    def _refund_nft_bids(nft: dict, hlx_balances: dict, except_bidder: str | None = None) -> None:
+        bids = nft.get("bids", {})
+        for bidder, bid in list(bids.items()):
+            if bidder != except_bidder:
+                hlx_balances[bidder] += int(bid["amount"])
+        nft["bids"] = {}
+
+    @staticmethod
+    def _settle_nft_sale(nft: dict, seller: str, buyer: str, price: int, hlx_balances: dict, block_index: int | None) -> None:
+        creator = nft["creator"]
+        royalty = price * int(nft.get("royalty_bps", 0)) // 10000
+        if creator == seller:
+            hlx_balances[seller] += price
+        else:
+            hlx_balances[seller] += price - royalty
+            hlx_balances[creator] += royalty
+        nft["owner"] = buyer
+        nft["royalty_locked"] = True
+        nft["listing_price"] = None
+        nft["last_sale_price"] = price
+        nft["last_sale_block"] = block_index
+        nft["last_buyer"] = buyer
+        nft["sale_count"] = int(nft.get("sale_count", 0)) + 1
+
+    def _apply_nft_transaction(
+        self,
+        tx: Transaction,
+        nfts: dict,
+        block_index: int | None = None,
+        hlx_balances: dict | None = None,
+    ) -> str | None:
         """Validate and apply one NFT operation.
 
         ERC-721 style: each NFT is a unique asset with an explicit owner (not a
         fungible balance). ``nft_mint`` creates it (owner = creator); only the
-        current owner can ``nft_transfer`` it.
+        current owner can transfer or list it. Marketplace bids are escrowed in
+        ``hlx_balances`` until cancelled, refunded, accepted, or purchased over.
         """
         if tx.tx_type not in Transaction.NFT_TYPES:
             return "transaction type is unsupported"
         if block_index is not None and block_index < self.nft_activation_height:
             return "NFTs are not active at this block height"
+        market_types = Transaction.NFT_TYPES - {"nft_mint", "nft_transfer", "nft_set_royalty"}
+        if (
+            tx.tx_type in market_types
+            and block_index is not None
+            and block_index < self.nft_market_activation_height
+        ):
+            return "the NFT marketplace is not active at this block height"
         if not self._valid_address(tx.nft_id):
             return "NFT id is invalid"
         if not isinstance(tx.nonce, str) or TOKEN_NONCE_RE.fullmatch(tx.nonce) is None:
             return "NFT transaction nonce must be 32 lowercase hexadecimal characters"
-        if tx.amount != 0:
-            return "NFT transactions must use amount zero"
+        zero_amount_types = {
+            "nft_mint", "nft_transfer", "nft_cancel_listing",
+            "nft_cancel_bid", "nft_accept_bid", "nft_set_royalty",
+        }
+        if tx.tx_type in zero_amount_types and tx.amount != 0:
+            return "this NFT transaction must use amount zero"
+        if tx.tx_type not in zero_amount_types and tx.amount <= 0:
+            return "NFT listing, bid, and purchase amounts must be positive"
 
         if tx.tx_type == "nft_mint":
             if tx.nft_id in nfts:
@@ -657,20 +998,128 @@ class Blockchain:
                 "metadata_hash": tx.metadata_hash,
                 "attributes": attributes,
                 "royalty_bps": royalty,
+                "royalty_locked": False,
                 "minted_block": block_index,
+                "listing_price": None,
+                "bids": {},
+                "last_sale_price": None,
+                "last_sale_block": None,
+                "last_buyer": None,
+                "sale_count": 0,
             }
             return None
 
-        # nft_transfer
         nft = nfts.get(tx.nft_id)
         if nft is None:
             return "NFT does not exist on the confirmed chain or earlier in this block"
-        if tx.sender != nft["owner"]:
-            return "only the current NFT owner can transfer it"
-        if not self._valid_address(tx.receiver):
-            return "NFT recipient address is invalid"
-        nft["owner"] = tx.receiver
-        return None
+        nft.setdefault("listing_price", None)
+        nft.setdefault("bids", {})
+        nft.setdefault("royalty_locked", nft.get("owner") != nft.get("creator"))
+        nft.setdefault("last_sale_price", None)
+        nft.setdefault("last_sale_block", None)
+        nft.setdefault("last_buyer", None)
+        nft.setdefault("sale_count", 0)
+        balances = hlx_balances if hlx_balances is not None else defaultdict(int)
+        owner = nft["owner"]
+
+        if tx.tx_type == "nft_set_royalty":
+            if tx.sender != nft["creator"] or tx.receiver != tx.sender:
+                return "only the NFT creator can change its royalty"
+            if owner != nft["creator"] or nft["royalty_locked"]:
+                return "NFT royalty is permanently locked after its first ownership transfer or sale"
+            if tx.royalty_bps is None or not 0 <= tx.royalty_bps <= 10000:
+                return "NFT royalty must be between 0 and 10000 basis points"
+            nft["royalty_bps"] = tx.royalty_bps
+            return None
+
+        if tx.tx_type == "nft_transfer":
+            if tx.sender != owner:
+                return "only the current NFT owner can transfer it"
+            if not self._valid_address(tx.receiver):
+                return "NFT recipient address is invalid"
+            self._refund_nft_bids(nft, balances)
+            nft["listing_price"] = None
+            if tx.receiver != owner:
+                nft["royalty_locked"] = True
+            nft["owner"] = tx.receiver
+            return None
+
+        if tx.tx_type == "nft_list":
+            if tx.sender != owner or tx.receiver != tx.sender:
+                return "only the current NFT owner can list it"
+            nft["listing_price"] = tx.amount
+            return None
+
+        if tx.tx_type == "nft_cancel_listing":
+            if tx.sender != owner or tx.receiver != tx.sender:
+                return "only the current NFT owner can cancel its listing"
+            if nft["listing_price"] is None:
+                return "NFT is not listed"
+            self._refund_nft_bids(nft, balances)
+            nft["listing_price"] = None
+            return None
+
+        if tx.tx_type == "nft_bid":
+            if nft["listing_price"] is None:
+                return "NFT must be listed before it can receive bids"
+            if tx.sender == owner:
+                return "an NFT owner cannot bid on their own NFT"
+            if tx.receiver != owner:
+                return "NFT bid receiver must be the current owner"
+            previous = nft["bids"].get(tx.sender)
+            previous_amount = int(previous["amount"]) if previous else 0
+            if tx.amount <= previous_amount:
+                return "a replacement NFT bid must be higher than the previous bid"
+            available = balances[tx.sender] + previous_amount
+            if available < tx.amount:
+                return "NFT bid exceeds the bidder's available HLX balance"
+            balances[tx.sender] = available - tx.amount
+            nft["bids"][tx.sender] = {
+                "bidder": tx.sender,
+                "amount": tx.amount,
+                "block": block_index,
+                "tx_id": tx.tx_id,
+            }
+            return None
+
+        if tx.tx_type == "nft_cancel_bid":
+            if tx.receiver != tx.sender:
+                return "NFT bid cancellation receiver must match its sender"
+            bid = nft["bids"].pop(tx.sender, None)
+            if bid is None:
+                return "wallet does not have an active bid on this NFT"
+            balances[tx.sender] += int(bid["amount"])
+            return None
+
+        if tx.tx_type == "nft_accept_bid":
+            if tx.sender != owner:
+                return "only the current NFT owner can accept a bid"
+            bid = nft["bids"].get(tx.receiver)
+            if bid is None:
+                return "selected NFT bid does not exist"
+            price = int(bid["amount"])
+            self._refund_nft_bids(nft, balances, except_bidder=tx.receiver)
+            self._settle_nft_sale(nft, owner, tx.receiver, price, balances, block_index)
+            return None
+
+        if tx.tx_type == "nft_buy":
+            listing_price = nft["listing_price"]
+            if listing_price is None:
+                return "NFT is not listed for sale"
+            if tx.sender == owner:
+                return "an NFT owner cannot buy their own NFT"
+            if tx.receiver != owner:
+                return "NFT purchase receiver must be the current owner"
+            if tx.amount != listing_price:
+                return "NFT purchase amount does not match its listing price"
+            self._refund_nft_bids(nft, balances)
+            if balances[tx.sender] < tx.amount:
+                return "NFT purchase exceeds the buyer's available HLX balance"
+            balances[tx.sender] -= tx.amount
+            self._settle_nft_sale(nft, owner, tx.sender, tx.amount, balances, block_index)
+            return None
+
+        return "NFT transaction type is unsupported"
 
     def _apply_token_transaction(
         self,
@@ -926,6 +1375,122 @@ class Blockchain:
         with self._lock:
             return self._token_balances.get((mint_address, address), 0)
 
+    def wallet_leaderboard(self) -> list[dict]:
+        """Rank public addresses by confirmed HLX plus token spot value.
+
+        Token value intentionally matches the wallet dashboard calculation:
+        balance_units * pool_hlx_reserve / pool_token_reserve. NFTs and tokens
+        without an active HLX pool are excluded because they have no objective
+        on-chain HLX price.
+        """
+        with self._lock, localcontext() as decimal_context:
+            decimal_context.prec = 60
+            addresses = {
+                address for address in self._balance_index
+                if self._valid_address(address)
+            }
+            token_values = defaultdict(Decimal)
+            priced_counts = defaultdict(int)
+            unpriced_counts = defaultdict(int)
+            for (mint, owner), balance in self._token_balances.items():
+                if balance <= 0 or not self._valid_address(owner):
+                    continue
+                addresses.add(owner)
+                token = self._tokens.get(mint, {})
+                hlx_reserve = int(token.get("pool_hlx_reserve", 0) or 0)
+                token_reserve = int(token.get("pool_token_reserve", 0) or 0)
+                if hlx_reserve > 0 and token_reserve > 0:
+                    token_values[owner] += (
+                        Decimal(balance) * Decimal(hlx_reserve) / Decimal(token_reserve)
+                    )
+                    priced_counts[owner] += 1
+                else:
+                    unpriced_counts[owner] += 1
+            rows = []
+            for address in addresses:
+                hlx_balance = Decimal(str(self._balance_index.get(address, 0)))
+                token_value = token_values[address]
+                total = hlx_balance + token_value
+                if total <= 0:
+                    continue
+
+                def decimal_text(value: Decimal) -> str:
+                    return format(value.quantize(Decimal("0.00000001")), "f").rstrip("0").rstrip(".") or "0"
+
+                rows.append({
+                    "address": address,
+                    "hlx_balance": Transaction.serialized_amount(hlx_balance),
+                    "estimated_token_value_hlx": decimal_text(token_value),
+                    "estimated_total_hlx": decimal_text(total),
+                    "priced_token_count": priced_counts[address],
+                    "unpriced_token_count": unpriced_counts[address],
+                    "_sort_total": total,
+                })
+            rows.sort(key=lambda row: (-row["_sort_total"], row["address"]))
+            for rank, row in enumerate(rows, 1):
+                row["rank"] = rank
+                row.pop("_sort_total", None)
+            return rows
+
+    @staticmethod
+    def _wallet_worth(address, balances, tokens, token_balances) -> Decimal:
+        total = Decimal(str(balances.get(address, 0)))
+        for (mint, owner), balance in token_balances.items():
+            if owner != address or balance <= 0:
+                continue
+            token = tokens.get(mint, {})
+            hlx_reserve = int(token.get("pool_hlx_reserve", 0) or 0)
+            token_reserve = int(token.get("pool_token_reserve", 0) or 0)
+            if hlx_reserve > 0 and token_reserve > 0:
+                total += Decimal(balance) * Decimal(hlx_reserve) / Decimal(token_reserve)
+        return total
+
+    def wallet_value_history(self, address: str, limit: int = 2000) -> list[dict]:
+        """Reconstruct confirmed wallet worth after each block."""
+        with self._lock, localcontext() as decimal_context:
+            decimal_context.prec = 60
+            balances = defaultdict(int)
+            tokens = {}
+            token_balances = defaultdict(int)
+            token_supply = defaultdict(int)
+            nfts = {}
+            points = []
+            for block in self.chain[1:]:
+                block_fees = 0
+                for tx in block.transactions:
+                    if tx.sender == "SYSTEM":
+                        balances[tx.receiver] += tx.amount
+                        continue
+                    fee = self.effective_transaction_fee(tx)
+                    balances[tx.sender] -= fee
+                    block_fees += fee
+                    if tx.tx_type == "transfer":
+                        balances[tx.sender] -= tx.amount
+                        balances[tx.receiver] += tx.amount
+                    elif tx.tx_type in Transaction.NFT_TYPES:
+                        self._apply_nft_transaction(
+                            tx, nfts, block_index=block.index, hlx_balances=balances
+                        )
+                    elif tx.tx_type != "cancel":
+                        self._apply_token_transaction(
+                            tx, tokens, token_balances, token_supply,
+                            block_index=block.index, hlx_balances=balances,
+                        )
+                if block_fees and block.transactions[-1].sender == "SYSTEM":
+                    balances[block.transactions[-1].receiver] += block_fees
+                worth = self._wallet_worth(address, balances, tokens, token_balances)
+                points.append({
+                    "block": block.index,
+                    "timestamp": block.timestamp,
+                    "worth_hlx": format(
+                        worth.quantize(Decimal("0.00000001")), "f"
+                    ).rstrip("0").rstrip(".") or "0",
+                    "hlx_balance": Transaction.serialized_amount(
+                        Decimal(str(balances.get(address, 0)))
+                    ),
+                })
+            return points[-max(1, min(int(limit), 5000)):]
+
     def token_account_exists(self, mint_address: str, address: str) -> bool:
         with self._lock:
             return (mint_address, address) in self._token_accounts
@@ -986,7 +1551,18 @@ class Blockchain:
             return points
 
     def transaction_rejection_reason(self, tx: Transaction, pending=None) -> str | None:
-        pending = self.pending_transactions if pending is None else pending
+        if pending is None:
+            pending = self.pending_transactions
+            if tx.sequence is not None:
+                replacement = next((
+                    existing for existing in pending
+                    if existing.sender == tx.sender
+                    and existing.sequence == tx.sequence
+                ), None)
+                if replacement is not None:
+                    if self.effective_transaction_fee(tx) <= self.effective_transaction_fee(replacement):
+                        return "replacement transaction fee must be higher"
+                    pending = [existing for existing in pending if existing is not replacement]
         if tx.sender == "SYSTEM":
             return "wallets cannot submit SYSTEM transactions"
         if not self._valid_address(tx.sender) or not self._valid_address(tx.receiver):
@@ -995,33 +1571,78 @@ class Blockchain:
             return "transaction amount must be positive"
         if not tx.verify_signature():
             return "transaction signature is invalid"
+        if not tx.signature_is_canonical():
+            return "transaction signature must use canonical low-S encoding"
         if tx.tx_id != tx.calculate_id():
             return "transaction ID is invalid"
         if self.is_transaction_cancelled(tx.tx_id, tx.sender):
             return "transaction was cancelled by its sender"
-        if any(existing.tx_id == tx.tx_id for existing in pending):
+        canonical_id = tx.canonical_id()
+        if any(
+            existing.tx_id == tx.tx_id or existing.canonical_id() == canonical_id
+            for existing in pending
+        ):
             return "transaction is already pending"
         if self.find_transaction(tx.tx_id)[1] is not None:
             return "transaction is already confirmed"
+        if canonical_id in getattr(self, "_canonical_transaction_ids", set()):
+            return "signature-equivalent transaction is already confirmed"
 
-        if tx.tx_type == "transfer":
-            if self.get_available_balance(tx.sender, pending) < tx.amount:
+        next_height = len(self.chain)
+        envelope_error = self.envelope_rejection_reason(
+            tx, next_height, self.next_sequence(tx.sender, pending)
+        )
+        if envelope_error is not None:
+            return envelope_error
+        fee_error = self.transaction_fee_rejection_reason(tx, next_height)
+        if fee_error is not None:
+            return fee_error
+        fee = self.effective_transaction_fee(tx)
+
+        if tx.tx_type in {"transfer", "cancel"}:
+            if self.get_available_balance(tx.sender, pending) < tx.amount + fee:
                 return "transaction exceeds the sender's available HLX balance"
             return None
 
         if tx.tx_type in Transaction.NFT_TYPES:
-            nfts = {nid: dict(nft) for nid, nft in getattr(self, "_nfts", {}).items()}
+            nfts = deepcopy(getattr(self, "_nfts", {}))
+            tokens = {mint: dict(token) for mint, token in self._tokens.items()}
+            token_balances = defaultdict(int, self._token_balances)
+            token_supply = defaultdict(int, self._token_supply)
+            hlx_balances = defaultdict(int, self._balance_index)
             for existing in pending:
-                if existing.tx_type in Transaction.NFT_TYPES:
-                    if self._apply_nft_transaction(existing, nfts, block_index=len(self.chain)) is not None:
+                hlx_balances[existing.sender] -= self.effective_transaction_fee(existing)
+                if existing.tx_type == "transfer":
+                    hlx_balances[existing.sender] -= existing.amount
+                    hlx_balances[existing.receiver] += existing.amount
+                elif existing.tx_type in Transaction.NFT_TYPES:
+                    reason = self._apply_nft_transaction(
+                        existing, nfts, block_index=len(self.chain),
+                        hlx_balances=hlx_balances,
+                    )
+                    if reason is not None:
                         return "existing pending NFT state is invalid"
-            return self._apply_nft_transaction(tx, nfts, block_index=len(self.chain))
+                elif existing.tx_type in Transaction.TOKEN_TYPES:
+                    reason = self._apply_token_transaction(
+                        existing, tokens, token_balances, token_supply,
+                        block_index=len(self.chain), hlx_balances=hlx_balances,
+                    )
+                    if reason is not None:
+                        return "existing pending token state is invalid"
+            if hlx_balances[tx.sender] < fee:
+                return "transaction fee exceeds the sender's available HLX balance"
+            hlx_balances[tx.sender] -= fee
+            return self._apply_nft_transaction(
+                tx, nfts, block_index=len(self.chain), hlx_balances=hlx_balances
+            )
 
         tokens = {mint: dict(token) for mint, token in self._tokens.items()}
         token_balances = defaultdict(int, self._token_balances)
         token_supply = defaultdict(int, self._token_supply)
         hlx_balances = defaultdict(int, self._balance_index)
+        nfts = deepcopy(getattr(self, "_nfts", {}))
         for existing in pending:
+            hlx_balances[existing.sender] -= self.effective_transaction_fee(existing)
             if existing.tx_type == "transfer":
                 hlx_balances[existing.sender] -= existing.amount
                 hlx_balances[existing.receiver] += existing.amount
@@ -1033,6 +1654,16 @@ class Blockchain:
                 )
                 if reason is not None:
                     return "existing pending token state is invalid"
+            if existing.tx_type in Transaction.NFT_TYPES:
+                reason = self._apply_nft_transaction(
+                    existing, nfts,
+                    block_index=len(self.chain), hlx_balances=hlx_balances,
+                )
+                if reason is not None:
+                    return "existing pending NFT state is invalid"
+        if hlx_balances[tx.sender] < fee:
+            return "transaction fee exceeds the sender's available HLX balance"
+        hlx_balances[tx.sender] -= fee
         return self._apply_token_transaction(
             tx, tokens, token_balances, token_supply,
             block_index=len(self.chain),
@@ -1046,11 +1677,27 @@ class Blockchain:
         with self._lock:
             if transaction.tx_id is None:
                 transaction.generate_id()
-            if len(self.pending_transactions) >= self.max_pending_transactions:
+            replacement = None
+            if transaction.sequence is not None:
+                replacement = next((
+                    tx for tx in self.pending_transactions
+                    if tx.sender == transaction.sender
+                    and tx.sequence == transaction.sequence
+                ), None)
+            candidate_pending = self.pending_transactions
+            if replacement is not None:
+                old_fee = self.effective_transaction_fee(replacement)
+                new_fee = self.effective_transaction_fee(transaction)
+                if new_fee <= old_fee:
+                    return False
+                candidate_pending = [
+                    tx for tx in self.pending_transactions if tx is not replacement
+                ]
+            elif len(self.pending_transactions) >= self.max_pending_transactions:
                 return False
-            if not self._validate_pending_transaction(transaction):
+            if not self._validate_pending_transaction(transaction, candidate_pending):
                 return False
-            self.pending_transactions.append(transaction)
+            self.pending_transactions = [*candidate_pending, transaction]
             self.save()
             return True
 
@@ -1184,7 +1831,38 @@ class Blockchain:
             previous_hash = self.chain[-1].hash
             transactions = list(self.pending_transactions)
             transactions.append(self._make_reward(index, miner_address, previous_hash))
-            block = Block(index, transactions, previous_hash)
+            transaction_root = None
+            state_root = None
+            if index >= self.state_commitment_activation_height:
+                transaction_root = self.transaction_merkle_root(transactions)
+                balances = defaultdict(int, self._balance_index)
+                tokens = deepcopy(self._tokens)
+                token_balances = defaultdict(int, self._token_balances)
+                token_supply = defaultdict(int, self._token_supply)
+                nfts = deepcopy(getattr(self, "_nfts", {}))
+                total_fees = 0
+                for tx in transactions[:-1]:
+                    fee = self.effective_transaction_fee(tx)
+                    balances[tx.sender] -= fee
+                    total_fees += fee
+                    if tx.tx_type == "transfer":
+                        balances[tx.sender] -= tx.amount
+                        balances[tx.receiver] += tx.amount
+                    elif tx.tx_type in Transaction.NFT_TYPES:
+                        self._apply_nft_transaction(tx, nfts, index, balances)
+                    elif tx.tx_type != "cancel":
+                        self._apply_token_transaction(
+                            tx, tokens, token_balances, token_supply, index, balances
+                        )
+                reward = transactions[-1]
+                balances[reward.receiver] += reward.amount + total_fees
+                state_root = self.state_root(
+                    balances, tokens, token_balances, token_supply, nfts
+                )
+            block = Block(
+                index, transactions, previous_hash,
+                transaction_root=transaction_root, state_root=state_root,
+            )
             return (
                 block,
                 self.expected_difficulty(index, self.chain),
@@ -1202,6 +1880,8 @@ class Blockchain:
                 "timestamp": block.timestamp,
                 "nonce": block.nonce,
                 "hash": block.hash,
+                **({"transaction_root": block.transaction_root} if block.transaction_root is not None else {}),
+                **({"state_root": block.state_root} if block.state_root is not None else {}),
                 "transactions": [tx.to_dict() for tx in block.transactions],
             }
             for block in self.chain
@@ -1219,10 +1899,13 @@ class Blockchain:
         token_supply: dict,
         chain_context=None,
         nfts: dict | None = None,
+        sender_sequences: dict | None = None,
     ):
         chain_context = self.chain if chain_context is None else chain_context
         if nfts is None:
             nfts = {}
+        if sender_sequences is None:
+            sender_sequences = defaultdict(int)
         if block.index != previous.index + 1:
             return False, "block index is not sequential", total_supply
         if block.previous_hash != previous.hash:
@@ -1238,6 +1921,14 @@ class Blockchain:
             return False, "proof of work is invalid (hash is above the required target)", total_supply
         if not block.transactions:
             return False, "block contains no transactions", total_supply
+        commitments_active = block.index >= self.state_commitment_activation_height
+        if commitments_active:
+            if block.transaction_root != self.transaction_merkle_root(block.transactions):
+                return False, "transaction Merkle root is invalid", total_supply
+            if not isinstance(block.state_root, str) or not re.fullmatch(r"[0-9a-f]{64}", block.state_root):
+                return False, "state root is missing or invalid", total_supply
+        elif block.transaction_root is not None or block.state_root is not None:
+            return False, "state commitments are not active yet", total_supply
 
         rewards = [tx for tx in block.transactions if tx.sender == "SYSTEM"]
         if len(rewards) != 1:
@@ -1260,6 +1951,7 @@ class Blockchain:
         if total_supply + reward.amount > self.max_supply:
             return False, "block exceeds maximum supply", total_supply
 
+        total_fees = 0
         for tx in block.transactions[:-1]:
             if tx.sender == "SYSTEM":
                 return False, "unexpected SYSTEM transaction", total_supply
@@ -1269,17 +1961,46 @@ class Blockchain:
                 return False, "transaction amount must be positive", total_supply
             if not tx.verify_signature():
                 return False, "transaction signature is invalid", total_supply
+            canonical_id = tx.canonical_id()
+            canonical_marker = "signature:" + canonical_id
+            if (
+                block.index >= self.canonical_signature_activation_height
+                and not tx.signature_is_canonical()
+            ):
+                return False, "transaction signature must use canonical low-S encoding", total_supply
             if tx.tx_id is None or tx.tx_id != tx.calculate_id():
                 return False, "transaction ID is invalid", total_supply
             if tx.tx_id in seen_tx_ids:
                 return False, "duplicate transaction ID", total_supply
+            if (
+                block.index >= self.canonical_signature_activation_height
+                and canonical_marker in seen_tx_ids
+            ):
+                return False, "duplicate signature-equivalent transaction", total_supply
+            fee_error = self.transaction_fee_rejection_reason(tx, block.index)
+            if fee_error is not None:
+                return False, fee_error, total_supply
+            envelope_error = self.envelope_rejection_reason(
+                tx, block.index, sender_sequences[tx.sender]
+            )
+            if envelope_error is not None:
+                return False, envelope_error, total_supply
+            fee = self.effective_transaction_fee(tx)
+            if balances[tx.sender] < fee:
+                return False, "transaction fee overspends sender balance", total_supply
+            balances[tx.sender] -= fee
+            total_fees += fee
             if tx.tx_type == "transfer":
                 if balances[tx.sender] < tx.amount:
                     return False, "transaction overspends sender balance", total_supply
                 balances[tx.sender] -= tx.amount
                 balances[tx.receiver] += tx.amount
+            elif tx.tx_type == "cancel":
+                pass
             elif tx.tx_type in Transaction.NFT_TYPES:
-                nft_error = self._apply_nft_transaction(tx, nfts, block_index=block.index)
+                nft_error = self._apply_nft_transaction(
+                    tx, nfts, block_index=block.index, hlx_balances=balances
+                )
                 if nft_error is not None:
                     return False, nft_error, total_supply
             else:
@@ -1291,12 +2012,21 @@ class Blockchain:
                 if token_error is not None:
                     return False, token_error, total_supply
             seen_tx_ids.add(tx.tx_id)
+            seen_tx_ids.add(canonical_marker)
+            sender_sequences[tx.sender] += 1
 
         if reward.tx_id in seen_tx_ids:
             return False, "duplicate reward transaction ID", total_supply
         balances[reward.receiver] += reward.amount
+        balances[reward.receiver] += total_fees
         seen_tx_ids.add(reward.tx_id)
         total_supply += reward.amount
+        if commitments_active:
+            expected_state_root = self.state_root(
+                balances, tokens, token_balances, token_supply, nfts
+            )
+            if block.state_root != expected_state_root:
+                return False, "state root does not match resulting state", total_supply
         return True, None, total_supply
 
     def validate_next_block(self, block: Block):
@@ -1307,6 +2037,7 @@ class Blockchain:
         token_balances = defaultdict(int)
         token_supply = defaultdict(int)
         nfts = {}
+        sender_sequences = defaultdict(int)
         for existing in self.chain[1:]:
             ok, reason, total_supply = self._validate_block_against_state(
                 existing,
@@ -1319,12 +2050,14 @@ class Blockchain:
                 token_supply,
                 self.chain[: existing.index],
                 nfts,
+                sender_sequences,
             )
             if not ok:
                 return False, f"local chain invalid before new block: {reason}"
         ok, reason, _ = self._validate_block_against_state(
             block, self.chain[-1], balances, seen, total_supply,
-            tokens, token_balances, token_supply, self.chain, nfts
+            tokens, token_balances, token_supply, self.chain, nfts,
+            sender_sequences,
         )
         return ok, reason
 
@@ -1351,6 +2084,7 @@ class Blockchain:
         token_balances = defaultdict(int)
         token_supply = defaultdict(int)
         nfts = {}
+        sender_sequences = defaultdict(int)
         for position in range(1, len(chain)):
             block = chain[position]
             previous = chain[position - 1]
@@ -1359,7 +2093,8 @@ class Blockchain:
                 return False, f"block {position}: checkpoint mismatch"
             ok, reason, total_supply = self._validate_block_against_state(
                 block, previous, balances, seen, total_supply,
-                tokens, token_balances, token_supply, chain[:position], nfts
+                tokens, token_balances, token_supply, chain[:position], nfts,
+                sender_sequences,
             )
             if not ok:
                 return False, f"block {position}: {reason}"

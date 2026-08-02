@@ -6,7 +6,7 @@ import json
 from node.transaction import Transaction
 from wallet.network import (
     get_balance, get_chain, get_health, get_history, get_node_stats, get_pending,
-    get_transaction, mine, send_transaction,
+    get_transaction, get_transaction_envelope, send_transaction,
 )
 from wallet.wallet_manager import (
     add_watch_only_wallet, change_wallet_password, create_wallet, delete_wallet,
@@ -34,7 +34,7 @@ Commands:
   address                         Show selected wallet address
   balance                         Show confirmed balance
   history [OFFSET] [LIMIT]        Show paginated transaction history
-  mine                            Mine pending transactions
+  Mining is performed by the separate Helix Miner application.
   send ADDRESS AMOUNT             Sign and submit a transaction
   pending                         Show pending transactions
   tx ID                           View a transaction
@@ -168,9 +168,6 @@ def main():
             _print_json(get_node_stats())
         elif action == "health":
             _print_json(get_health())
-        elif action == "mine":
-            if _require_wallet():
-                _print_json(mine(current_wallet.address))
         elif action == "pending":
             _print_json(get_pending())
         elif action == "chain":
@@ -186,11 +183,24 @@ def main():
             except ValueError:
                 print("Amount must be an integer")
                 continue
-            tx = Transaction(current_wallet.address, command[1], amount)
+            stats = get_node_stats()
+            fee = int(stats.get("transaction_fee", 1)) if isinstance(stats, dict) else 1
+            envelope = get_transaction_envelope(current_wallet.address)
+            if not isinstance(envelope, dict):
+                print("Could not get transaction signing fields from the node")
+                continue
+            tx = Transaction(
+                current_wallet.address, command[1], amount, fee=fee,
+                chain_id=envelope["chain_id"],
+                sequence=envelope["next_sequence"],
+                valid_until_height=envelope["valid_until_height"],
+            )
             tx.public_key = current_wallet.public_key
             tx.sign(current_wallet.private_key)
             result = send_transaction({
-                "sender": tx.sender, "receiver": tx.receiver, "amount": tx.amount,
+                "sender": tx.sender, "receiver": tx.receiver, "amount": tx.amount, "fee": tx.fee,
+                "chain_id": tx.chain_id, "sequence": tx.sequence,
+                "valid_until_height": tx.valid_until_height,
                 "signature": tx.signature, "public_key": current_wallet.public_key_string(),
                 "tx_id": tx.tx_id,
             })

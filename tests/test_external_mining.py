@@ -4,6 +4,8 @@ from pathlib import Path
 
 import node.node as node_api
 from node.blockchain import Blockchain
+from node.transaction import Transaction
+from wallet.wallet import Wallet
 
 
 class ExternalMiningTests(unittest.TestCase):
@@ -50,6 +52,46 @@ class ExternalMiningTests(unittest.TestCase):
         self.assertEqual(len(node_api.blockchain.chain), 1)
         self.assertEqual(work["target_prefix"], "0")
         self.assertEqual(work["block"]["transactions"][-1]["receiver"], "b" * 40)
+
+    def test_external_miner_preserves_nft_fields_when_submitting_block(self):
+        creator = Wallet()
+        nonce = "1" * 32
+        attributes = [{"trait_type": "Rarity", "value": "Rare"}]
+        nft = Transaction(
+            creator.address,
+            creator.address,
+            0,
+            tx_type="nft_mint",
+            nft_id=Transaction.nft_address(creator.address, nonce),
+            nonce=nonce,
+            name="External NFT",
+            description="Mined by an external miner",
+            image="https://example.com/nft.png",
+            uri="https://example.com/nft.json",
+            metadata_hash=Transaction.nft_metadata_hash(
+                "External NFT",
+                "Mined by an external miner",
+                "https://example.com/nft.png",
+                attributes,
+            ),
+            attributes=attributes,
+            royalty_bps=500,
+        )
+        nft.public_key = creator.public_key
+        nft.sign(creator.private_key)
+        self.assertTrue(node_api.blockchain.add_transaction(nft))
+
+        work = node_api.external_mining_work(creator.address)
+        candidate = node_api.dict_to_block(work["block"])
+        candidate.mine_to_target(int(work["target"], 16))
+        accepted = node_api.external_mining_submit({
+            "block": node_api.block_to_dict(candidate),
+        })
+
+        self.assertTrue(accepted["accepted"], accepted)
+        confirmed = node_api.blockchain.get_nft(nft.nft_id)
+        self.assertEqual(confirmed["attributes"], attributes)
+        self.assertEqual(confirmed["royalty_bps"], 500)
 
 
 if __name__ == "__main__":

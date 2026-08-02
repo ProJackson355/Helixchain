@@ -20,8 +20,13 @@ assert.match(script, /seedIvHex = _hexRandom\(12\)/);
 assert.match(script, /seedCipherHex: await _encryptString\(seedPhrase, aesKey, seedIv\)/);
 assert.match(script, /iterations < WALLET_KDF_ITERATIONS \|\| !entry\.seedIvHex/);
 assert.match(headers, /script-src-attr 'none'/);
+assert.match(headers, /Strict-Transport-Security: max-age=31536000; includeSubDomains; preload/);
+assert.match(headers, /Cross-Origin-Opener-Policy: same-origin/);
 const csp = headers.match(/Content-Security-Policy:\s*([^\n]+)/)?.[1] || "";
 const scriptDirective = csp.split(";").find(value => value.trim().startsWith("script-src ")) || "";
 assert.doesNotMatch(scriptDirective, /'unsafe-inline'/);
+assert.equal(scriptDirective.trim(), "script-src 'self'", "wallet scripts must be self-hosted");
+assert.doesNotMatch(script, /import\(['"]https?:\/\//);
+assert.match(script, /import\('\/secp256k1\.js\?v=2\.2\.0'\)/);
 
 console.log("Web XSS hardening tests: OK");

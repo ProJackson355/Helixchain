@@ -70,3 +70,29 @@ class Wallet:
     @staticmethod
     def from_seed_phrase(seed_phrase: str, account_index: int = 0) -> "Wallet":
         return Wallet(seed_phrase, account_index=account_index)
+
+    @classmethod
+    def from_web_seed_phrase(cls, seed_phrase: str) -> "Wallet":
+        """Reproduce the browser wallet's original Helix seed derivation.
+
+        Browser wallets choose 12 entries from the BIP-39 word list without a
+        BIP-39 checksum, then use PBKDF2-SHA256 with the fixed Helix salt.  This
+        is intentionally separate from ``from_seed_phrase`` so existing Python
+        BIP-39 wallets retain their original addresses.
+        """
+        normalized = " ".join(seed_phrase.strip().split())
+        if not normalized:
+            raise ValueError("seed phrase is required")
+        private_key_bytes = hashlib.pbkdf2_hmac(
+            "sha256", normalized.encode(), b"helix-wallet-v1", 100_000, dklen=32
+        )
+        private_key_int = int.from_bytes(private_key_bytes, "big")
+        if not 1 <= private_key_int < _CURVE_ORDER:
+            raise ValueError("derived browser wallet key is outside the secp256k1 range")
+        wallet = cls.__new__(cls)
+        wallet.seed_phrase = normalized
+        wallet.account_index = 0
+        wallet.private_key = ec.derive_private_key(private_key_int, ec.SECP256K1())
+        wallet.public_key = wallet.private_key.public_key()
+        wallet.address = wallet.generate_address()
+        return wallet

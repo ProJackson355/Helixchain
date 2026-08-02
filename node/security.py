@@ -16,6 +16,10 @@ from fastapi.responses import JSONResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_FILE = Path(os.getenv("HELIX_SECURITY_STATE", PROJECT_ROOT / "security_state.json"))
+DEFAULT_ADMIN_PATHS = (
+    "/sync", "/nodes/sync_now", "/nodes/discover", "/nodes/audit",
+    "/nodes/submissions", "/nodes/register", "/security/status",
+)
 
 
 class SecurityManager:
@@ -145,8 +149,6 @@ class SecurityManager:
             path.startswith("/transaction/") and path.endswith("/cancel")
         ):
             return "transactions"
-        if path == "/mine" or path.startswith("/mine/"):
-            return "mining"
         if path.startswith("/mining/"):
             return "external_mining"
         if path.startswith("/nodes/audit") or path.startswith("/nodes/discover") or path.startswith("/nodes/sync_now"):
@@ -245,7 +247,7 @@ class SecurityMiddleware:
             await response(scope, receive, send)
             return
 
-        admin_paths = tuple(self.manager.config.get("admin_paths", []))
+        admin_paths = tuple(self.manager.config.get("admin_paths", DEFAULT_ADMIN_PATHS))
         if admin_paths and any(path == item or path.startswith(item + "/") for item in admin_paths):
             if not self.manager.valid_api_key(headers.get("x-helix-api-key")):
                 self.manager.report_violation(ip)
@@ -272,6 +274,50 @@ class SecurityMiddleware:
                 raise
             response = JSONResponse({"detail": "Request body too large"}, status_code=413)
             await response(scope, receive, send)
+
+
+class WebSecurityHeadersMiddleware:
+    """Apply browser defenses when the node serves the bundled wallet UI."""
+
+    _EXACT_PATHS = {
+        "/", "/app.js", "/qrcode.js", "/pwa.js", "/jsqr.js",
+        "/secp256k1.js", "/manifest.webmanifest", "/sw.js",
+    }
+    _PREFIXES = ("/icons/", "/downloads/")
+    _HEADERS = {
+        b"content-security-policy": (
+            b"default-src 'self'; script-src 'self'; script-src-attr 'none'; "
+            b"style-src 'self' 'unsafe-inline'; connect-src 'self' https:; "
+            b"img-src 'self' data: https:; object-src 'none'; base-uri 'none'; "
+            b"frame-ancestors 'none'; form-action 'self'"
+        ),
+        b"permissions-policy": b"camera=(self), microphone=(), geolocation=(), payment=(), usb=()",
+        b"referrer-policy": b"no-referrer",
+        b"x-content-type-options": b"nosniff",
+        b"x-frame-options": b"DENY",
+        b"cross-origin-opener-policy": b"same-origin",
+        b"cross-origin-resource-policy": b"same-origin",
+    }
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "")
+        is_web_asset = path in self._EXACT_PATHS or path.startswith(self._PREFIXES)
+
+        async def secured_send(message):
+            if is_web_asset and message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                existing = {name.lower() for name, _ in headers}
+                headers.extend(
+                    (name, value) for name, value in self._HEADERS.items()
+                    if name not in existing
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, secured_send)
 
 
 def validate_hex(value: object, name: str, lengths: Iterable[int]) -> str:

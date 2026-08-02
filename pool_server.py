@@ -26,7 +26,7 @@ import os
 import re
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict, deque
 from contextlib import asynccontextmanager
 
 import requests
@@ -64,6 +64,10 @@ def block_hash(block: dict, nonce: int | None = None) -> str:
         "timestamp": block["timestamp"],
         "nonce": block["nonce"] if nonce is None else nonce,
     }
+    if block.get("transaction_root") is not None:
+        payload["transaction_root"] = block["transaction_root"]
+    if block.get("state_root") is not None:
+        payload["state_root"] = block["state_root"]
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -72,7 +76,9 @@ def meets_difficulty(digest: str, difficulty: int) -> bool:
     return digest.startswith("0" * int(difficulty))
 
 
-def compute_payouts(reward: int, fee_percent: float, shares: dict[str, int]) -> tuple[dict[str, int], int, int]:
+def compute_payouts(
+    reward: int, fee_percent: float, shares: dict[str, int], transaction_fee: int = 0
+) -> tuple[dict[str, int], int, int]:
     """Proportional split. Returns (payouts, fee, remainder-kept-by-pool).
 
     Each miner earns (reward - fee) * shares_i / total_shares, floored to whole
@@ -83,7 +89,10 @@ def compute_payouts(reward: int, fee_percent: float, shares: dict[str, int]) -> 
     if total <= 0 or reward <= 0:
         return {}, 0, reward if reward > 0 else 0
     fee = int(reward * max(0.0, fee_percent) / 100)
-    distributable = reward - fee
+    # Each payout is itself an on-chain transaction. Reserve its network fee so
+    # the pool never promises more than its confirmed block income can spend.
+    network_cost = max(0, int(transaction_fee)) * len(shares)
+    distributable = max(0, reward - fee - network_cost)
     payouts: dict[str, int] = {}
     for address, count in sorted(shares.items()):
         amount = distributable * count // total
@@ -97,17 +106,27 @@ class Pool:
     def __init__(self):
         self.lock = threading.RLock()
         seed = os.getenv("HELIX_POOL_SEED", "").strip()
-        self.wallet = Wallet.from_seed_phrase(seed) if seed else None
+        seed_format = os.getenv("HELIX_POOL_SEED_FORMAT", "bip39").strip().lower()
+        self.wallet = (
+            Wallet.from_web_seed_phrase(seed)
+            if seed and seed_format == "web"
+            else Wallet.from_seed_phrase(seed) if seed
+            else None
+        )
         self.address = (os.getenv("HELIX_POOL_ADDRESS", "").strip().lower()
                         or (self.wallet.address if self.wallet else ""))
         self.nodes = _env_nodes()
         self.share_subtract = int(os.getenv("HELIX_POOL_SHARE_SUBTRACT", "2"))
         self.min_share_difficulty = max(1, int(os.getenv("HELIX_POOL_MIN_SHARE_DIFFICULTY", "1")))
         self.fee_percent = float(os.getenv("HELIX_POOL_FEE_PERCENT", "1.0"))
+        self.pplns_window = max(100, int(os.getenv("HELIX_POOL_PPLNS_WINDOW", "10000")))
+        self.share_seconds = max(2.0, float(os.getenv("HELIX_POOL_SHARE_SECONDS", "15")))
         self.job: dict | None = None
         self.job_fetched = 0.0
         self.seen: set[tuple[str, int]] = set()
         self.round_shares: dict[str, int] = defaultdict(int)
+        self.share_window = deque(maxlen=self.pplns_window)
+        self.miner_share_targets: dict[str, int] = {}
         self.round_started = time.time()
         self.miner_last_share: dict[str, float] = {}
         self.blocks_found = 0
@@ -159,7 +178,10 @@ class Pool:
                     "share_difficulty": share_difficulty,
                     "network_target": network_target,
                     "share_target": share_target,
-                    "reward": int(work.get("reward", 0) or 0),
+                    "reward": int(work.get("miner_payment", work.get("reward", 0)) or 0),
+                    "subsidy": int(work.get("reward", 0) or 0),
+                    "transaction_fees": int(work.get("transaction_fees", 0) or 0),
+                    "transaction_fee": int(work.get("transaction_fee", 1) or 1),
                     "height": int(block["index"]),
                 }
                 self.job_fetched = time.time()
@@ -181,14 +203,33 @@ class Pool:
                 continue
         return False
 
-    def _send_payout(self, receiver: str, amount: int) -> None:
+    def _send_payout(self, receiver: str, amount: int, transaction_fee: int) -> None:
         if self.wallet is None or amount <= 0:
             return
-        tx = Transaction(self.address, receiver, int(amount))
+        envelope = None
+        for node in self.nodes:
+            try:
+                response = requests.get(
+                    node + f"/transaction/envelope/{self.address}", timeout=REQUEST_TIMEOUT
+                )
+                if response.ok:
+                    envelope = response.json()
+                    break
+            except (requests.RequestException, ValueError):
+                continue
+        if not isinstance(envelope, dict):
+            return
+        tx = Transaction(
+            self.address, receiver, int(amount), fee=int(transaction_fee),
+            chain_id=envelope["chain_id"], sequence=envelope["next_sequence"],
+            valid_until_height=envelope["valid_until_height"],
+        )
         tx.public_key = self.wallet.public_key
         tx.sign(self.wallet.private_key)
         payload = {
-            "sender": tx.sender, "receiver": tx.receiver, "amount": tx.amount,
+            "sender": tx.sender, "receiver": tx.receiver, "amount": tx.amount, "fee": tx.fee,
+            "chain_id": tx.chain_id, "sequence": tx.sequence,
+            "valid_until_height": tx.valid_until_height,
             "signature": tx.signature, "public_key": self.wallet.public_key_string(),
             "tx_id": tx.tx_id,
         }
@@ -200,6 +241,18 @@ class Pool:
                 continue
 
     # --- share handling -----------------------------------------------------
+    def share_target_for(self, address: str, job: dict) -> int:
+        """Return the miner's vardiff target, bounded by real network work."""
+        with self.lock:
+            default_target = job.get("share_target")
+            if default_target is None:
+                default_target = difficulty_to_target(job.get("share_difficulty", 1))
+            network_target = job.get("network_target")
+            if network_target is None:
+                network_target = difficulty_to_target(job.get("network_difficulty", 1))
+            target = self.miner_share_targets.get(address, default_target)
+            return max(network_target, min(MAX_HASH, int(target)))
+
     def submit_share(self, job_id: str, address: str, nonce: int) -> dict:
         address = (address or "").strip().lower()
         if ADDRESS_RE.fullmatch(address) is None:
@@ -217,7 +270,7 @@ class Pool:
             block = job["block"]
             share_difficulty = job["share_difficulty"]
             # Numeric targets (fall back to leading-zero difficulty if absent).
-            share_target = job.get("share_target")
+            share_target = self.share_target_for(address, job)
             if share_target is None:
                 share_target = difficulty_to_target(job["share_difficulty"])
             network_target = job.get("network_target")
@@ -231,8 +284,23 @@ class Pool:
                 return {"accepted": False, "reason": "stale job"}
             self.seen.add((job_id, nonce))
             self.round_shares[address] += 1
+            share_work = max(1, MAX_HASH // (int(share_target) + 1))
+            self.share_window.append((address, share_work))
+            previous_share = self.miner_last_share.get(address)
             self.miner_last_share[address] = time.time()
-        result = {"accepted": True, "share_difficulty": share_difficulty}
+            next_target = share_target
+            if previous_share is not None:
+                interval = max(0.001, time.time() - previous_share)
+                if interval < self.share_seconds / 2:
+                    next_target = max(network_target, share_target // 2)
+                elif interval > self.share_seconds * 2:
+                    next_target = min(MAX_HASH, share_target * 2)
+                self.miner_share_targets[address] = next_target
+        result = {
+            "accepted": True,
+            "share_difficulty": leading_zero_difficulty(next_target),
+            "share_target": f"{next_target:064x}",
+        }
         if int(digest, 16) <= network_target:
             solved = dict(block)
             solved["nonce"] = nonce
@@ -246,15 +314,21 @@ class Pool:
 
     def _settle_round(self, job: dict, finder: str) -> None:
         with self.lock:
-            shares = dict(self.round_shares)
+            shares = dict(Counter({
+                address: sum(work for owner, work in self.share_window if owner == address)
+                for address, _work in self.share_window
+            }))
             self.blocks_found += 1
-        payouts, fee, kept = compute_payouts(job["reward"], self.fee_percent, shares)
+        payouts, fee, kept = compute_payouts(
+            job["reward"], self.fee_percent, shares, job.get("transaction_fee", 1)
+        )
         for address, amount in payouts.items():
-            self._send_payout(address, amount)
+            self._send_payout(address, amount, job.get("transaction_fee", 1))
         with self.lock:
             self.payouts.insert(0, {
                 "height": job["height"], "reward": job["reward"], "fee": fee,
-                "kept": kept, "total_shares": sum(shares.values()),
+                "kept": kept, "total_shares": sum(self.round_shares.values()),
+                "pplns_work": sum(shares.values()),
                 "recipients": len(payouts), "finder": finder, "at": time.time(),
                 "breakdown": payouts,
             })
@@ -353,7 +427,9 @@ def pool_info():
     return {
         "pool_address": pool.address,
         "fee_percent": pool.fee_percent,
-        "scheme": "proportional",
+        "scheme": "PPLNS",
+        "pplns_window": pool.pplns_window,
+        "vardiff_target_seconds": pool.share_seconds,
         "payouts_enabled": pool.wallet is not None,
         "share_difficulty": job["share_difficulty"] if job else pool.min_share_difficulty,
         "network_difficulty": job["network_difficulty"] if job else None,
@@ -364,17 +440,19 @@ def pool_info():
 
 @app.get("/pool/work")
 def pool_work(address: str):
-    if ADDRESS_RE.fullmatch((address or "").strip().lower()) is None:
+    address = (address or "").strip().lower()
+    if ADDRESS_RE.fullmatch(address) is None:
         return {"message": "A 40-character reward address is required to receive work."}
     job = pool.refresh_job()
     if job is None:
         return {"message": "The pool has no block template yet; is its node reachable?"}
+    share_target = pool.share_target_for(address, job)
     return {
         "job_id": job["job_id"],
         "block": job["block"],
-        "share_difficulty": job["share_difficulty"],
+        "share_difficulty": leading_zero_difficulty(share_target),
         "network_difficulty": job["network_difficulty"],
-        "share_target": f"{job['share_target']:064x}",
+        "share_target": f"{share_target:064x}",
         "network_target": f"{job['network_target']:064x}",
         "height": job["height"],
         "reward": job["reward"],

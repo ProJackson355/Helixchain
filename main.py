@@ -23,7 +23,8 @@ def demo():
         alice.address,
         bob.address,
         10,
-        alice.public_key
+        alice.public_key,
+        fee=coin.transaction_fee,
     )
 
     transaction.sign(

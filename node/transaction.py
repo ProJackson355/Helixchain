@@ -7,6 +7,13 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import (
+    decode_dss_signature,
+    encode_dss_signature,
+)
+
+
+SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
 
 class Transaction:
@@ -22,8 +29,16 @@ class Transaction:
     }
     # ERC-721-style non-fungible tokens: each is a unique asset with an explicit
     # owner (not a fungible balance). Minted by a creator, transferred by the owner.
-    NFT_TYPES = {"nft_mint", "nft_transfer"}
-    ZERO_AMOUNT_TYPES = {"token_create", "token_set_authority", "nft_mint", "nft_transfer"}
+    NFT_TYPES = {
+        "nft_mint", "nft_transfer", "nft_list", "nft_cancel_listing",
+        "nft_bid", "nft_cancel_bid", "nft_accept_bid", "nft_buy",
+        "nft_set_royalty",
+    }
+    ZERO_AMOUNT_TYPES = {
+        "token_create", "token_set_authority", "nft_mint", "nft_transfer",
+        "nft_cancel_listing", "nft_cancel_bid", "nft_accept_bid",
+        "nft_set_royalty", "cancel",
+    }
 
     def __init__(
         self,
@@ -50,6 +65,10 @@ class Transaction:
         nft_id: str | None = None,
         attributes: list | None = None,
         royalty_bps: int | None = None,
+        fee: int | None = None,
+        chain_id: str | None = None,
+        sequence: int | None = None,
+        valid_until_height: int | None = None,
     ):
         if isinstance(amount, bool):
             raise ValueError("amount must be an integer")
@@ -119,6 +138,12 @@ class Transaction:
         self.nft_id = nft_id
         self.attributes = attributes if isinstance(attributes, list) else None
         self.royalty_bps = optional_integer(royalty_bps, "royalty_bps")
+        self.fee = optional_integer(fee, "fee")
+        self.chain_id = None if chain_id is None else str(chain_id)
+        self.sequence = optional_integer(sequence, "sequence")
+        self.valid_until_height = optional_integer(
+            valid_until_height, "valid_until_height"
+        )
         self.public_key = public_key
         self.signature = None
         self.tx_id = None
@@ -130,7 +155,21 @@ class Transaction:
             "receiver": self.receiver,
             "amount": self.serialized_amount(self.amount),
         }
-        if self.tx_type != "transfer" and self.tx_type not in self.NFT_TYPES:
+        # Transactions confirmed before the fee upgrade did not serialize this
+        # field. Omit None so their signatures, IDs, and block hashes stay exact.
+        if self.fee is not None:
+            payload["fee"] = self.fee
+        # Protocol-15 envelope fields are omitted from historical records so
+        # every pre-upgrade transaction signature and block hash stays exact.
+        if self.chain_id is not None:
+            payload["chain_id"] = self.chain_id
+        if self.sequence is not None:
+            payload["sequence"] = self.sequence
+        if self.valid_until_height is not None:
+            payload["valid_until_height"] = self.valid_until_height
+        if self.tx_type == "cancel":
+            payload["tx_type"] = self.tx_type
+        elif self.tx_type != "transfer" and self.tx_type not in self.NFT_TYPES:
             payload.update({
                 "tx_type": self.tx_type,
                 "mint_address": self.mint_address,
@@ -152,6 +191,8 @@ class Transaction:
                 "attributes": self.attributes or [],
                 "royalty_bps": self.royalty_bps or 0,
             })
+        if self.tx_type == "nft_set_royalty":
+            payload["royalty_bps"] = self.royalty_bps
         if self.tx_type == "token_create":
             payload.update({
                 "dad_address": self.dad_address,
@@ -230,6 +271,29 @@ class Transaction:
             raw += self.signature
         return hashlib.sha256(raw.encode()).hexdigest()
 
+    @staticmethod
+    def canonical_signature_hex(signature: str) -> str:
+        """Normalize an ECDSA signature to its unique low-S representation."""
+        r, s = decode_dss_signature(bytes.fromhex(signature))
+        if not 1 <= r < SECP256K1_ORDER or not 1 <= s < SECP256K1_ORDER:
+            raise ValueError("signature scalar is outside the secp256k1 range")
+        if s > SECP256K1_ORDER // 2:
+            s = SECP256K1_ORDER - s
+        return encode_dss_signature(r, s).hex()
+
+    def signature_is_canonical(self) -> bool:
+        try:
+            return bool(self.signature) and self.signature == self.canonical_signature_hex(self.signature)
+        except (TypeError, ValueError):
+            return False
+
+    def canonical_id(self) -> str:
+        """ID shared by the low-S and high-S forms of the same signature."""
+        raw = self.data()
+        if self.signature:
+            raw += self.canonical_signature_hex(self.signature)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
     def generate_id(self) -> str:
         self.tx_id = self.calculate_id()
         return self.tx_id
@@ -269,7 +333,7 @@ class Transaction:
             self.data().encode(),
             ec.ECDSA(hashes.SHA256()),
         )
-        self.signature = signature.hex()
+        self.signature = self.canonical_signature_hex(signature.hex())
         self.generate_id()
 
     def address_from_public_key(self) -> str:
@@ -323,9 +387,19 @@ class Transaction:
             "tx_id": self.tx_id,
             "public_key": public_key,
         }
+        if self.fee is not None:
+            data["fee"] = self.fee
+        if self.chain_id is not None:
+            data["chain_id"] = self.chain_id
+        if self.sequence is not None:
+            data["sequence"] = self.sequence
+        if self.valid_until_height is not None:
+            data["valid_until_height"] = self.valid_until_height
         # Keep legacy transfers and mining rewards byte-for-byte compatible
         # with existing block hashes. Token fields exist only on token records.
-        if self.tx_type != "transfer" and self.tx_type not in self.NFT_TYPES:
+        if self.tx_type == "cancel":
+            data["tx_type"] = self.tx_type
+        elif self.tx_type != "transfer" and self.tx_type not in self.NFT_TYPES:
             data.update({
                 "tx_type": self.tx_type,
                 "mint_address": self.mint_address,
@@ -347,6 +421,8 @@ class Transaction:
                 "attributes": self.attributes or [],
                 "royalty_bps": self.royalty_bps or 0,
             })
+        if self.tx_type == "nft_set_royalty":
+            data["royalty_bps"] = self.royalty_bps
         if self.tx_type == "token_create":
             data.update({
                 "dad_address": self.dad_address,

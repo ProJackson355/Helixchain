@@ -1,7 +1,9 @@
 import unittest
+import json
+from pathlib import Path
 from unittest.mock import patch
 
-from node.security import SecurityManager
+from node.security import SecurityManager, SecurityMiddleware, WebSecurityHeadersMiddleware
 
 
 class SecurityClientIpTests(unittest.TestCase):
@@ -89,10 +91,9 @@ class SecurityClientIpTests(unittest.TestCase):
         }
         self.assertEqual(self.manager().client_ip(scope), "127.0.0.1")
 
-    def test_background_mining_routes_share_mining_rate_limit(self):
+    def test_only_external_mining_routes_have_a_mining_rate_limit(self):
         manager = self.manager()
-        self.assertEqual(manager.route_group("/mine/start"), "mining")
-        self.assertEqual(manager.route_group("/mine/status/" + "a" * 32), "mining")
+        self.assertEqual(manager.route_group("/mine/start"), "default")
         self.assertEqual(manager.route_group("/mining/work"), "external_mining")
         self.assertEqual(manager.route_group("/mining/submit"), "external_mining")
 
@@ -105,6 +106,83 @@ class SecurityClientIpTests(unittest.TestCase):
         with patch.dict("os.environ", {"HELIX_ADMIN_API_KEY": "correct-secret"}):
             self.assertFalse(manager.valid_api_key("wrong-secret"))
             self.assertTrue(manager.valid_api_key("correct-secret"))
+
+    def test_sensitive_node_management_routes_are_admin_protected(self):
+        config = json.loads(
+            (Path(__file__).resolve().parents[1] / "config.json").read_text(encoding="utf-8")
+        )
+        protected = set(config["security"]["admin_paths"])
+        self.assertTrue({
+            "/sync", "/nodes/register", "/nodes/submissions",
+            "/nodes/discover", "/nodes/audit", "/security/status",
+        }.issubset(protected))
+
+
+class WebSecurityHeadersTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wallet_assets_receive_browser_security_headers(self):
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        middleware = WebSecurityHeadersMiddleware(app)
+        await middleware({"type": "http", "path": "/"}, receive, send)
+        headers = dict(messages[0]["headers"])
+        self.assertEqual(headers[b"x-frame-options"], b"DENY")
+        self.assertIn(b"script-src 'self'", headers[b"content-security-policy"])
+        self.assertNotIn(b"https://esm.sh", headers[b"content-security-policy"])
+
+    async def test_api_responses_do_not_receive_static_asset_corp_header(self):
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await WebSecurityHeadersMiddleware(app)(
+            {"type": "http", "path": "/health"}, receive, send
+        )
+        self.assertNotIn(b"cross-origin-resource-policy", dict(messages[0]["headers"]))
+
+
+class AdminMiddlewareFailClosedTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_routes_remain_protected_when_config_omits_path_list(self):
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        manager = SecurityManager({
+            "require_admin_api_key": True,
+            "admin_api_key": "correct-secret",
+            "rate_limits": {"default": {"requests": 10, "window_seconds": 60}},
+        })
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await SecurityMiddleware(app, manager)(
+            {"type": "http", "path": "/nodes/register", "client": ("198.51.100.8", 1), "headers": []},
+            receive,
+            send,
+        )
+        self.assertEqual(messages[0]["status"], 401)
 
 
 if __name__ == "__main__":

@@ -130,8 +130,8 @@ def send_transaction(tx):
     return response.json() if response is not None else None
 
 
-def mine(address):
-    response = _request("POST", "/mine", params={"address": address}, timeout=10)
+def get_transaction_envelope(address):
+    response = _request("GET", "/transaction/envelope/" + address)
     return response.json() if response is not None else None
 
 

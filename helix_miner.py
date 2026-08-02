@@ -15,12 +15,18 @@ import queue
 import re
 import threading
 import time
-import tkinter as tk
 from copy import deepcopy
-from tkinter import ttk
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except ImportError:  # The headless CLI does not require python3-tk.
+    tk = None
+    ttk = None
 
 
 ADDRESS_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -83,6 +89,10 @@ def block_hash(block: dict, nonce: int | None = None) -> str:
         "timestamp": block["timestamp"],
         "nonce": block["nonce"] if nonce is None else nonce,
     }
+    if block.get("transaction_root") is not None:
+        payload["transaction_root"] = block["transaction_root"]
+    if block.get("state_root") is not None:
+        payload["state_root"] = block["state_root"]
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode()
@@ -176,21 +186,25 @@ def _share_worker(block, target, start_nonce, stride, stop_event, output):
 
 
 class HelixMinerApp:
-    BG = "#090b12"
-    SURFACE = "#121622"
-    SURFACE2 = "#191e2d"
-    BORDER = "#2b3348"
-    TEXT = "#eef1fa"
-    MUTED = "#929bb1"
-    ACCENT = "#746cff"
-    GREEN = "#53dd91"
-    RED = "#ff6c7d"
+    # Keep these in sync with the wallet's CSS variables in web/index.html.
+    BG = "#0a0b0f"
+    HEADER = "#0f1117"
+    SURFACE = "#14161c"
+    SURFACE2 = "#1b1e26"
+    BORDER = "#23262f"
+    TEXT = "#e8eaf0"
+    MUTED = "#888e9c"
+    ACCENT = "#7c5cfc"
+    ACCENT2 = "#5b8af7"
+    GREEN = "#3dd68c"
+    RED = "#f06474"
+    ORANGE = "#ffb86c"
 
     def __init__(self, root: tk.Tk, address: str = "", nodes: str = DEFAULT_NODE, threads: int = 1):
         self.root = root
         self.root.title("Helix Miner")
-        self.root.geometry("820x820")
-        self.root.minsize(620, 620)
+        self.root.geometry("980x820")
+        self.root.minsize(680, 600)
         self.root.configure(bg=self.BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -218,31 +232,86 @@ class HelixMinerApp:
 
         self._style()
         self._build()
+        self.status_var.trace_add("write", self._sync_status_style)
+        self._sync_status_style()
         self.root.after(100, self._drain_ui_events)
 
     def _style(self):
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure("Miner.TEntry", fieldbackground=self.SURFACE2, foreground=self.TEXT,
-                        bordercolor=self.BORDER, insertcolor=self.TEXT, padding=10)
-        style.configure("Miner.TSpinbox", fieldbackground=self.SURFACE2, foreground=self.TEXT,
-                        bordercolor=self.BORDER, arrowcolor=self.MUTED, padding=9)
-        style.configure("Miner.TCombobox", fieldbackground=self.SURFACE2, foreground=self.TEXT,
-                        bordercolor=self.BORDER, arrowcolor=self.MUTED, padding=9)
-        style.map("Miner.TEntry", bordercolor=[("focus", self.ACCENT)])
-        style.map("Miner.TSpinbox", bordercolor=[("focus", self.ACCENT)])
+        self.root.option_add("*TCombobox*Listbox.background", self.SURFACE2)
+        self.root.option_add("*TCombobox*Listbox.foreground", self.TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "white")
+        for name in ("Miner.TEntry", "Miner.TSpinbox", "Miner.TCombobox"):
+            style.configure(
+                name,
+                fieldbackground=self.SURFACE2,
+                background=self.SURFACE2,
+                foreground=self.TEXT,
+                bordercolor=self.BORDER,
+                lightcolor=self.BORDER,
+                darkcolor=self.BORDER,
+                insertcolor=self.TEXT,
+                arrowcolor=self.MUTED,
+                padding=11,
+                relief="flat",
+            )
+            style.map(
+                name,
+                bordercolor=[("focus", self.ACCENT), ("active", self.ACCENT2)],
+                lightcolor=[("focus", self.ACCENT)],
+                darkcolor=[("focus", self.ACCENT)],
+                fieldbackground=[("disabled", self.HEADER), ("readonly", self.SURFACE2)],
+                foreground=[("disabled", "#5e6470"), ("readonly", self.TEXT)],
+            )
+        style.configure(
+            "Miner.Vertical.TScrollbar",
+            background=self.SURFACE2,
+            troughcolor=self.BG,
+            bordercolor=self.BG,
+            arrowcolor=self.MUTED,
+            relief="flat",
+        )
 
     def _build(self):
-        header = tk.Frame(self.root, bg=self.SURFACE, padx=24, pady=12)
+        header = tk.Frame(
+            self.root, bg=self.HEADER, padx=26, pady=14,
+            highlightbackground=self.BORDER, highlightthickness=1,
+        )
         header.pack(fill="x")
-        tk.Label(header, text="H", bg=self.ACCENT, fg="white", font=("Segoe UI", 18, "bold"),
-                 width=2, pady=3).pack(side="left")
-        title = tk.Frame(header, bg=self.SURFACE)
+        icon = getattr(self.root, "_helix_icon", None)
+        if icon is not None:
+            factor = max(1, round(max(icon.width(), icon.height()) / 38))
+            self._header_icon = icon.subsample(factor, factor)
+            tk.Label(header, image=self._header_icon, bg=self.HEADER, bd=0).pack(side="left")
+        else:
+            tk.Label(
+                header, text="H", bg=self.ACCENT, fg="white",
+                font=("Segoe UI", 17, "bold"), width=2, pady=3,
+            ).pack(side="left")
+        title = tk.Frame(header, bg=self.HEADER)
         title.pack(side="left", padx=12)
-        tk.Label(title, text="Helix Miner", bg=self.SURFACE, fg=self.TEXT,
+        tk.Label(title, text="Helix Miner", bg=self.HEADER, fg=self.TEXT,
                  font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        tk.Label(title, text="Competitive SHA-256 proof-of-work miner", bg=self.SURFACE,
+        tk.Label(title, text="Competitive external proof-of-work", bg=self.HEADER,
                  fg=self.MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+
+        self.status_pill = tk.Frame(
+            header, bg=self.SURFACE2, padx=12, pady=7,
+            highlightbackground=self.BORDER, highlightthickness=1,
+        )
+        self.status_pill.pack(side="right")
+        self.status_dot = tk.Label(
+            self.status_pill, text="\u25cf", bg=self.SURFACE2, fg=self.MUTED,
+            font=("Segoe UI", 9),
+        )
+        self.status_dot.pack(side="left", padx=(0, 7))
+        self.status_label = tk.Label(
+            self.status_pill, textvariable=self.status_var, bg=self.SURFACE2,
+            fg=self.TEXT, font=("Segoe UI", 9, "bold"),
+        )
+        self.status_label.pack(side="left")
 
         scroll_shell = tk.Frame(self.root, bg=self.BG)
         scroll_shell.pack(fill="both", expand=True)
@@ -251,12 +320,14 @@ class HelixMinerApp:
         )
         page_scrollbar = ttk.Scrollbar(
             scroll_shell, orient="vertical", command=self.scroll_canvas.yview,
+            style="Miner.Vertical.TScrollbar",
         )
         self.scroll_canvas.configure(yscrollcommand=page_scrollbar.set)
         page_scrollbar.pack(side="right", fill="y")
         self.scroll_canvas.pack(side="left", fill="both", expand=True)
 
-        canvas = tk.Frame(self.scroll_canvas, bg=self.BG, padx=18, pady=10)
+        canvas = tk.Frame(self.scroll_canvas, bg=self.BG, padx=24, pady=20)
+        self.content = canvas
         self.scroll_window = self.scroll_canvas.create_window(
             (0, 0), window=canvas, anchor="nw",
         )
@@ -272,54 +343,77 @@ class HelixMinerApp:
                 self.scroll_window, width=event.width
             ),
         )
-        canvas.columnconfigure(0, weight=1)
-        canvas.columnconfigure(1, weight=1)
+        canvas.columnconfigure(0, weight=3, uniform="miner-columns")
+        canvas.columnconfigure(1, weight=2, uniform="miner-columns")
 
-        setup = self._card(canvas, "MINING SETUP", 0, 0)
+        hero = self._card(canvas, "MINING CONSOLE", 0, 0, columnspan=2)
+        self.hero_card = hero.master
+        hero_row = tk.Frame(hero, bg=self.SURFACE)
+        hero_row.pack(fill="x")
+        hero_copy = tk.Frame(hero_row, bg=self.SURFACE)
+        hero_copy.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            hero_copy, text="Mine Helix with your own hardware", bg=self.SURFACE,
+            fg=self.TEXT, font=("Segoe UI", 20, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            hero_copy,
+            text="Connect directly to a node or pool. Proof-of-work stays on this computer.",
+            bg=self.SURFACE, fg=self.MUTED, font=("Segoe UI", 10),
+            wraplength=580, justify="left",
+        ).pack(anchor="w", pady=(5, 0))
+        self.hero_badge = tk.Label(
+            hero_row, text="MAINNET  /  SHA-256", bg="#17152a", fg="#b9adff",
+            font=("Segoe UI", 8, "bold"), padx=11, pady=7,
+        )
+        self.hero_badge.pack(side="right", padx=(14, 0))
+
+        setup = self._card(canvas, "MINING CONFIGURATION", 1, 0)
+        self.setup_card = setup.master
         self._label(setup, "Reward wallet address").pack(anchor="w")
-        ttk.Entry(setup, textvariable=self.address_var, style="Miner.TEntry").pack(fill="x", pady=(4, 12))
+        ttk.Entry(setup, textvariable=self.address_var, style="Miner.TEntry").pack(fill="x", pady=(6, 15))
         self._label(setup, "Node URL(s)").pack(anchor="w")
-        ttk.Entry(setup, textvariable=self.nodes_var, style="Miner.TEntry").pack(fill="x", pady=(4, 12))
+        ttk.Entry(setup, textvariable=self.nodes_var, style="Miner.TEntry").pack(fill="x", pady=(6, 15))
         self._label(setup, "Mining mode").pack(anchor="w")
         self.mode_select = ttk.Combobox(
             setup, textvariable=self.mode_var, values=("Solo", "Pool"),
             state="readonly", style="Miner.TCombobox",
         )
-        self.mode_select.pack(fill="x", pady=(4, 12))
+        self.mode_select.pack(fill="x", pady=(6, 15))
         self.mode_select.bind("<<ComboboxSelected>>", self._mode_changed)
         self.pool_label = self._label(setup, "Pool URL (Pool mode)")
         self.pool_label.pack(anchor="w")
         self.pool_entry = ttk.Entry(setup, textvariable=self.pool_var, style="Miner.TEntry")
-        self.pool_entry.pack(fill="x", pady=(4, 12))
+        self.pool_entry.pack(fill="x", pady=(6, 15))
         self._label(setup, "Mining device").pack(anchor="w")
         self.backend_select = ttk.Combobox(
             setup, textvariable=self.backend_var, values=("CPU", "NVIDIA CUDA"),
             state="readonly", style="Miner.TCombobox",
         )
-        self.backend_select.pack(fill="x", pady=(4, 12))
+        self.backend_select.pack(fill="x", pady=(6, 15))
         self.backend_select.bind("<<ComboboxSelected>>", self._backend_changed)
         self._label(setup, "Mining processes").pack(anchor="w")
         self.process_select = ttk.Spinbox(
             setup, from_=1, to=max(1, os.cpu_count() or 1), textvariable=self.threads_var,
             style="Miner.TSpinbox", width=8,
         )
-        self.process_select.pack(fill="x", pady=(4, 14))
+        self.process_select.pack(fill="x", pady=(6, 18))
         controls = tk.Frame(setup, bg=self.SURFACE)
         controls.pack(fill="x")
-        self.start_button = tk.Button(controls, text="Start Mining", command=self.start,
-                                      bg=self.ACCENT, fg="white", activebackground="#6259ed",
-                                      activeforeground="white", relief="flat", padx=16, pady=10,
-                                      font=("Segoe UI", 10, "bold"), cursor="hand2")
+        self.start_button = self._button(
+            controls, "Start mining", self.start, self.ACCENT, "#6b4ee0",
+        )
         self.start_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        self.stop_button = tk.Button(controls, text="Stop", command=self.stop, state="disabled",
-                                     bg="#30151d", fg=self.RED, activebackground="#401b26",
-                                     activeforeground=self.RED, relief="flat", padx=16, pady=10,
-                                     font=("Segoe UI", 10, "bold"), cursor="hand2")
+        self.stop_button = self._button(
+            controls, "Stop", self.stop, "#2a171d", "#3a1c25", foreground=self.RED,
+        )
+        self.stop_button.configure(state="disabled")
         self.stop_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
-        network = self._card(canvas, "NETWORK STATUS", 0, 1)
-        tk.Label(network, textvariable=self.status_var, bg=self.SURFACE, fg=self.GREEN,
-                 font=("Segoe UI", 11, "bold"), wraplength=310, justify="left").pack(anchor="w", pady=(0, 12))
+        network = self._card(canvas, "NETWORK OVERVIEW", 1, 1)
+        self.network_card = network.master
+        tk.Label(network, textvariable=self.status_var, bg=self.SURFACE, fg=self.TEXT,
+                 font=("Segoe UI", 12, "bold"), wraplength=330, justify="left").pack(anchor="w", pady=(0, 14))
         metrics = tk.Frame(network, bg=self.SURFACE)
         metrics.pack(fill="both", expand=True)
         for col in range(2):
@@ -329,26 +423,100 @@ class HelixMinerApp:
         self._metric(metrics, "REWARD", self.reward_var, 1, 0)
         self._metric(metrics, "BLOCKS WON", self.wins_var, 1, 1)
 
-        performance = self._card(canvas, "LIVE PERFORMANCE", 1, 0, columnspan=2)
+        performance = self._card(canvas, "LIVE PERFORMANCE", 2, 0, columnspan=2)
+        self.performance_card = performance.master
         performance.columnconfigure(0, weight=1)
         performance.columnconfigure(1, weight=1)
-        self._metric(performance, "HASH RATE", self.hashrate_var, 0, 0)
+        self._metric(performance, "HASH RATE", self.hashrate_var, 0, 0, accent=True)
         self._metric(performance, "HASHES THIS ROUND", self.hashes_var, 0, 1)
 
-        logs = self._card(canvas, "MINER LOG", 2, 0, columnspan=2)
+        logs = self._card(canvas, "ACTIVITY LOG", 3, 0, columnspan=2)
+        self.logs_card = logs.master
         logs.rowconfigure(0, weight=1)
         logs.columnconfigure(0, weight=1)
-        self.log_widget = tk.Text(logs, height=10, bg="#090c14", fg=self.MUTED,
-                                  insertbackground=self.TEXT, relief="flat", padx=10, pady=8,
-                                  font=("Consolas", 9), state="disabled", wrap="word")
+        self.log_widget = tk.Text(logs, height=11, bg="#0b0d12", fg=self.MUTED,
+                                  insertbackground=self.TEXT, relief="flat", padx=14, pady=12,
+                                  font=("Cascadia Mono", 9), state="disabled", wrap="word",
+                                  highlightbackground=self.BORDER, highlightthickness=1)
         self.log_widget.grid(row=0, column=0, sticky="nsew")
-        log_scrollbar = ttk.Scrollbar(logs, orient="vertical", command=self.log_widget.yview)
+        self.log_widget.tag_configure("success", foreground=self.GREEN)
+        self.log_widget.tag_configure("error", foreground=self.RED)
+        self.log_widget.tag_configure("accent", foreground="#b9adff")
+        log_scrollbar = ttk.Scrollbar(logs, orient="vertical", command=self.log_widget.yview,
+                                      style="Miner.Vertical.TScrollbar")
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_widget.configure(yscrollcommand=log_scrollbar.set)
+        tk.Button(logs, text="Clear log", command=self._clear_log, bg=self.SURFACE2,
+                  fg=self.MUTED, activebackground=self.BORDER, activeforeground=self.TEXT,
+                  relief="flat", bd=0, padx=10, pady=6, font=("Segoe UI", 8, "bold"),
+                  cursor="hand2").grid(row=1, column=0, sticky="e", pady=(8, 0))
         self.root.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.root.bind_all("<Button-4>", self._on_mousewheel, add="+")
         self.root.bind_all("<Button-5>", self._on_mousewheel, add="+")
+        canvas.bind("<Configure>", self._responsive_layout, add="+")
+        self._compact_layout = None
+        self._mode_changed()
+        self._backend_changed()
         self.log("Ready. Enter a reward address and node URL, then start mining.")
+
+    def _button(self, parent, text, command, background, hover, foreground="white"):
+        button = tk.Button(
+            parent, text=text, command=command, bg=background, fg=foreground,
+            activebackground=hover, activeforeground=foreground,
+            disabledforeground="#676c78", relief="flat", bd=0,
+            padx=18, pady=11, font=("Segoe UI", 10, "bold"), cursor="hand2",
+        )
+
+        def enter(_event):
+            if str(button.cget("state")) != "disabled":
+                button.configure(bg=hover)
+
+        def leave(_event):
+            button.configure(bg=background)
+
+        button.bind("<Enter>", enter)
+        button.bind("<Leave>", leave)
+        return button
+
+    def _responsive_layout(self, event):
+        compact = event.width < 780
+        if compact == self._compact_layout:
+            return
+        self._compact_layout = compact
+        if compact:
+            self.content.columnconfigure(0, weight=1, uniform="")
+            self.content.columnconfigure(1, weight=0, uniform="")
+            self.setup_card.grid_configure(row=1, column=0, columnspan=2)
+            self.network_card.grid_configure(row=2, column=0, columnspan=2)
+            self.performance_card.grid_configure(row=3, column=0, columnspan=2)
+            self.logs_card.grid_configure(row=4, column=0, columnspan=2)
+            self.hero_badge.pack_forget()
+        else:
+            self.content.columnconfigure(0, weight=3, uniform="miner-columns")
+            self.content.columnconfigure(1, weight=2, uniform="miner-columns")
+            self.setup_card.grid_configure(row=1, column=0, columnspan=1)
+            self.network_card.grid_configure(row=1, column=1, columnspan=1)
+            self.performance_card.grid_configure(row=2, column=0, columnspan=2)
+            self.logs_card.grid_configure(row=3, column=0, columnspan=2)
+            if not self.hero_badge.winfo_manager():
+                self.hero_badge.pack(side="right", padx=(14, 0))
+
+    def _sync_status_style(self, *_args):
+        status = self.status_var.get().lower()
+        if any(word in status for word in ("unavailable", "failed", "error")):
+            color = self.RED
+        elif any(word in status for word in ("connecting", "stopping", "waiting", "submitting")):
+            color = self.ORANGE
+        elif "mining" in status or "pool" in status:
+            color = self.GREEN
+        else:
+            color = self.MUTED
+        self.status_dot.configure(fg=color)
+
+    def _clear_log(self):
+        self.log_widget.configure(state="normal")
+        self.log_widget.delete("1.0", "end")
+        self.log_widget.configure(state="disabled")
 
     def _on_mousewheel(self, event):
         if event.widget is self.log_widget:
@@ -373,10 +541,10 @@ class HelixMinerApp:
 
     def _card(self, parent, title, row, column, columnspan=1):
         outer = tk.Frame(parent, bg=self.SURFACE, highlightbackground=self.BORDER,
-                         highlightthickness=1, padx=16, pady=12)
-        outer.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=6, pady=6)
+                         highlightthickness=1, padx=22, pady=19)
+        outer.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=7, pady=7)
         tk.Label(outer, text=title, bg=self.SURFACE, fg=self.MUTED,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 12))
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 16))
         body = tk.Frame(outer, bg=self.SURFACE)
         body.pack(fill="both", expand=True)
         return body
@@ -384,19 +552,27 @@ class HelixMinerApp:
     def _label(self, parent, text):
         return tk.Label(parent, text=text, bg=self.SURFACE, fg=self.MUTED, font=("Segoe UI", 9))
 
-    def _metric(self, parent, label, variable, row, column):
+    def _metric(self, parent, label, variable, row, column, accent=False):
         box = tk.Frame(parent, bg=self.SURFACE2, highlightbackground=self.BORDER,
-                       highlightthickness=1, padx=13, pady=11)
-        box.grid(row=row, column=column, sticky="nsew", padx=5, pady=5)
+                       highlightthickness=1, padx=15, pady=13)
+        box.grid(row=row, column=column, sticky="nsew", padx=6, pady=6)
         tk.Label(box, text=label, bg=self.SURFACE2, fg=self.MUTED,
-                 font=("Segoe UI", 8)).pack(anchor="w")
-        tk.Label(box, textvariable=variable, bg=self.SURFACE2, fg=self.TEXT,
-                 font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(3, 0))
+                 font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        tk.Label(box, textvariable=variable, bg=self.SURFACE2,
+                 fg="#b9adff" if accent else self.TEXT,
+                 font=("Segoe UI", 17, "bold")).pack(anchor="w", pady=(4, 0))
 
     def log(self, message: str):
         stamp = time.strftime("%H:%M:%S")
+        lowered = message.lower()
+        tag = (
+            "success" if any(word in lowered for word in ("accepted", "earned", "found proof"))
+            else "error" if any(word in lowered for word in ("failed", "rejected", "unavailable"))
+            else "accent" if any(word in lowered for word in ("started block", "new pool job", "joining pool"))
+            else ""
+        )
         self.log_widget.configure(state="normal")
-        self.log_widget.insert("end", f"[{stamp}] {message}\n")
+        self.log_widget.insert("end", f"[{stamp}] {message}\n", tag)
         self.log_widget.see("end")
         self.log_widget.configure(state="disabled")
 
@@ -540,7 +716,7 @@ class HelixMinerApp:
                 self.emit("stats", {
                     "height": block["index"] - 1,
                     "difficulty": difficulty,
-                    "reward": work.get("reward", 0),
+                    "reward": work.get("miner_payment", work.get("reward", 0)),
                 })
                 if cuda_miner is not None:
                     self.emit("log", f"Started block {block['index']} at difficulty {difficulty} on {cuda_miner.device_name}.")
@@ -559,7 +735,9 @@ class HelixMinerApp:
                 result = self._submit(nodes, node, solved)
                 if result and result.get("accepted"):
                     self.emit("win", None)
-                    self.emit("log", f"Block {result['block']} accepted after {format_elapsed(round_elapsed)}; earned {result['reward']} HLX. Hash {result['hash']}")
+                    payment = result.get("miner_payment", result.get("reward", 0))
+                    fees = result.get("transaction_fees", 0)
+                    self.emit("log", f"Block {result['block']} accepted after {format_elapsed(round_elapsed)}; earned {payment} HLX ({result.get('reward', 0)} subsidy + {fees} fees). Hash {result['hash']}")
                 else:
                     message = result.get("message", "Submission failed") if result else "No node accepted the submission"
                     self.emit("log", f"{message} Round time: {format_elapsed(round_elapsed)}.")
@@ -784,8 +962,12 @@ class HelixMinerApp:
                 if time.monotonic() - last_job_check >= TIP_POLL_INTERVAL:
                     last_job_check = time.monotonic()
                     latest = self._pool_work(pool_url, address)
-                    if latest and latest.get("job_id") != job_id:
-                        self.emit("log", f"Pool advanced to block {latest['block']['index']}; refreshing work.")
+                    if latest and (
+                        latest.get("job_id") != job_id
+                        or work_target(latest) != share_target
+                    ):
+                        reason = "vardiff changed" if latest.get("job_id") == job_id else "pool advanced"
+                        self.emit("log", f"{reason.capitalize()}; refreshing work for block {latest['block']['index']}.")
                         self.round_stop.set()
                         break
         finally:
@@ -819,8 +1001,12 @@ class HelixMinerApp:
                 if time.monotonic() - last_job_check >= TIP_POLL_INTERVAL:
                     last_job_check = time.monotonic()
                     latest = self._pool_work(pool_url, address)
-                    if latest and latest.get("job_id") != job_id:
-                        self.emit("log", f"Pool advanced to block {latest['block']['index']}; refreshing CUDA work.")
+                    if latest and (
+                        latest.get("job_id") != job_id
+                        or work_target(latest) != share_target
+                    ):
+                        reason = "Vardiff changed" if latest.get("job_id") == job_id else "Pool advanced"
+                        self.emit("log", f"{reason}; refreshing CUDA work.")
                         break
         finally:
             self.round_stop.set()
@@ -828,6 +1014,13 @@ class HelixMinerApp:
 
 
 def main():
+    if tk is None or ttk is None:
+        raise SystemExit(
+            "The graphical miner requires tkinter. Install python3-tk, or run "
+            "helix_miner_cli.py for the terminal miner."
+        )
+    from gui_branding import apply_helix_icon, set_windows_app_id
+
     parser = argparse.ArgumentParser(description="Launch the Helix Miner desktop app.")
     parser.add_argument("--address", default="", help="40-character reward wallet address")
     parser.add_argument("--nodes", default=DEFAULT_NODE, help="node URL, CSV list, or JSON URL array")
@@ -835,7 +1028,9 @@ def main():
     parser.add_argument("--backend", choices=("cpu", "nvidia"), default="cpu", help="mining backend")
     args = parser.parse_args()
     mp.freeze_support()
+    set_windows_app_id("Miner")
     root = tk.Tk()
+    apply_helix_icon(root, Path(__file__).resolve().parent)
     app = HelixMinerApp(root, args.address, args.nodes, args.threads)
     if args.backend == "nvidia":
         app.backend_var.set("NVIDIA CUDA")
